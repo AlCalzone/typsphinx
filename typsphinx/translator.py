@@ -1595,6 +1595,52 @@ class TypstTranslator(SphinxTranslator):
         if reftarget:
             self.add_text("]")
 
+    def visit_typst_cite(self, node: nodes.Node) -> None:
+        """
+        Visit a typst_cite node (created by TypstCitationTransform).
+
+        Emits a native Typst citation, e.g. cite(label("KEY")), so Typst
+        resolves the reference against the bibliography() call itself.
+        Multiple keys are joined with + and grouped in parentheses.
+
+        Args:
+            node: The typst_cite node carrying a "keys" list attribute
+
+        Raises:
+            nodes.SkipNode: Always raised, the node has no children to visit
+        """
+
+        def escape(key: str) -> str:
+            return key.replace("\\", "\\\\").replace('"', '\\"')
+
+        keys = node["keys"]
+        expression = " + ".join(f'cite(label("{escape(key)}"))' for key in keys)
+        if len(keys) > 1:
+            expression = f"({expression})"
+
+        # Inline expression: separate like other inline nodes (text, math)
+        self._add_paragraph_separator()
+        if self.in_list_item and self.list_item_needs_separator:
+            self.add_text("\n")
+        prefix = "#" if self._in_markup_mode else ""
+        self.add_text(prefix + expression)
+        if self.in_list_item:
+            self.list_item_needs_separator = True
+
+        raise nodes.SkipNode
+
+    def depart_typst_cite(self, node: nodes.Node) -> None:
+        """
+        Depart a typst_cite node.
+
+        Args:
+            node: The typst_cite node
+
+        Note:
+            This method is not called when SkipNode is raised in visit_typst_cite.
+        """
+        pass
+
     def _compute_relative_include_path(
         self, target_docname: str, current_docname: Optional[str]
     ) -> str:

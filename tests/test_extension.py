@@ -22,6 +22,9 @@ def test_setup_returns_metadata():
         def add_config_value(self, name, default, rebuild, types):
             pass
 
+        def add_post_transform(self, transform):
+            pass
+
     app = MockApp()
     metadata = setup(app)
 
@@ -43,6 +46,9 @@ def test_setup_parallel_safety():
         def add_config_value(self, name, default, rebuild, types):
             pass
 
+        def add_post_transform(self, transform):
+            pass
+
     app = MockApp()
     metadata = setup(app)
 
@@ -60,6 +66,9 @@ def test_setup_version_matches():
             pass
 
         def add_config_value(self, name, default, rebuild, types):
+            pass
+
+        def add_post_transform(self, transform):
             pass
 
     app = MockApp()
