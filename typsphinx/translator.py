@@ -183,6 +183,11 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The title node
         """
+        # Admonition titles are hoisted into the clue's title: parameter
+        # by _visit_admonition; do not emit them again inside the body
+        if isinstance(node.parent, nodes.Admonition):
+            raise nodes.SkipNode
+
         # Use heading() function (no # prefix in code mode)
         self.add_text(f"heading(level: {self.section_level}, ")
 
@@ -1411,53 +1416,51 @@ class TypstTranslator(SphinxTranslator):
         Visit a block quote node.
 
         Generates quote() function call (no # prefix in code mode).
+        The body is a {} code block because child nodes emit code-mode
+        expressions (par(), text(), ...), which a [] markup block would
+        render as literal source text.
 
         Args:
             node: The block quote node
         """
-        # Check if there's an attribution child node
-        has_attribution = any(isinstance(child, nodes.attribution) for child in node)
-
-        if has_attribution:
-            # Will add attribution parameter when we encounter the attribution node
-            self.add_text("quote(")
-        else:
-            self.add_text("quote[")
+        self.add_text("quote(block: true, {\n")
 
     def depart_block_quote(self, node: nodes.block_quote) -> None:
         """
         Depart a block quote node.
 
+        Closes the body code block (or the attribution code block if an
+        attribution was emitted) and the quote() call.
+
         Args:
             node: The block quote node
         """
-        # Check if there's an attribution child node
-        has_attribution = any(isinstance(child, nodes.attribution) for child in node)
-
-        if has_attribution:
-            self.add_text(")\n\n")
-        else:
-            self.add_text("]\n\n")
+        self.add_text("})\n\n")
 
     def visit_attribution(self, node: nodes.attribution) -> None:
         """
         Visit an attribution node (quote attribution).
 
+        Closes the quote body code block and passes the attribution as a
+        named argument with a {} code block, since its children are also
+        emitted in code mode.
+
         Args:
             node: The attribution node
         """
-        # Close the quote content and add attribution parameter
-        self.add_text("], attribution: [")
+        self.add_text("}, attribution: {")
 
     def depart_attribution(self, node: nodes.attribution) -> None:
         """
         Depart an attribution node.
 
+        The attribution code block and the quote() call are closed in
+        depart_block_quote (attribution is the last child of the quote).
+
         Args:
             node: The attribution node
         """
-        # Close attribution parameter
-        self.add_text("]")
+        pass
 
     def visit_image(self, node: nodes.image) -> None:
         """
@@ -2272,20 +2275,22 @@ class TypstTranslator(SphinxTranslator):
                 title = child.astext()
                 break
 
-        # Use custom title if provided, otherwise check for title element
-        # No # prefix in unified code mode
+        # Use custom title if provided, otherwise check for title element.
+        # No # prefix in unified code mode.  The body is a {} code block
+        # because child nodes emit code-mode expressions (par(), text(),
+        # ...), which a [] markup block would render as literal source text.
         if title:
-            self.add_text(f'{clue_type}(title: "{title}")[')
+            self.add_text(f'{clue_type}(title: "{title}", {{\n')
         elif custom_title:
-            self.add_text(f'{clue_type}(title: "{custom_title}")[')
+            self.add_text(f'{clue_type}(title: "{custom_title}", {{\n')
         else:
-            self.add_text(f"{clue_type}[")
+            self.add_text(f"{clue_type}({{\n")
 
     def _depart_admonition(self) -> None:
         """
         Helper method to depart any admonition node.
         """
-        self.add_text("]\n\n")
+        self.add_text("})\n\n")
 
         # Mark that next element in list item needs separator
         if self.in_list_item:
