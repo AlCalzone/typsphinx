@@ -1450,7 +1450,7 @@ def test_figure_without_caption(simple_document, mock_builder):
 
 
 def test_target_label_generation(simple_document, mock_builder):
-    """Test that target nodes generate Typst labels."""
+    """Test that target nodes generate attached Typst labels."""
     from typsphinx.translator import TypstTranslator
 
     translator = TypstTranslator(simple_document, mock_builder)
@@ -1463,8 +1463,9 @@ def test_target_label_generation(simple_document, mock_builder):
 
     output = translator.astext()
 
-    # Check that Typst label is generated (using label() function in unified code mode)
-    assert 'label("my-label")' in output
+    # Labels can only attach to an element in markup mode, so standalone
+    # targets must produce an invisible attachable anchor
+    assert "[#metadata(none) <my-label>]" in output
 
 
 def test_reference_to_target(simple_document, mock_builder):

@@ -81,6 +81,16 @@ class TypstTranslator(SphinxTranslator):
             False  # Track if link has content for + separator
         )
 
+        # Label attachment state
+        # Typst labels can only be attached to an element in markup mode,
+        # so labelled elements are wrapped in markup blocks: [#elem(...) <label>]
+        self._title_label_ids: List[str] = (
+            []
+        )  # Section ids to attach to the current heading
+        self._literal_block_in_label_wrap = (
+            False  # Track if current code block is wrapped in [...] for its label
+        )
+
         # Definition list state
         self.in_definition_list = False
         self.current_term_buffer: Union[str, List[str], None] = None
@@ -126,6 +136,23 @@ class TypstTranslator(SphinxTranslator):
             self.add_text("\n")
         if self.in_paragraph:
             self.paragraph_has_content = True
+
+    @staticmethod
+    def _anchor_labels(label_ids: List[str]) -> str:
+        """
+        Build invisible attachable anchors for the given label ids.
+
+        Typst labels can only be attached to an element in markup mode.
+        For standalone targets there is no visible element to attach to,
+        so an invisible metadata element is labelled instead.
+
+        Args:
+            label_ids: The label ids to anchor
+
+        Returns:
+            Markup blocks with labelled metadata elements
+        """
+        return "".join(f"[#metadata(none) <{label_id}>]" for label_id in label_ids)
 
     def visit_document(self, node: nodes.document) -> None:
         """
@@ -180,23 +207,45 @@ class TypstTranslator(SphinxTranslator):
         Generates heading() function call with level parameter.
         Child text nodes will be wrapped in text() automatically.
 
+        Section labels can only be attached in markup mode, so labelled
+        headings are wrapped in a markup block: [#heading(...) <label>]
+
         Args:
             node: The title node
         """
-        # Use heading() function (no # prefix in code mode)
-        self.add_text(f"heading(level: {self.section_level}, ")
+        # Collect section ids to attach as labels (markup mode required)
+        self._title_label_ids = []
+        if isinstance(node.parent, nodes.section):
+            self._title_label_ids = list(node.parent.get("ids", []))
+
+        if self._title_label_ids:
+            # Wrap in markup block so the label can attach to the heading
+            self.add_text(f"[#heading(level: {self.section_level}, ")
+        else:
+            # Use heading() function (no # prefix in code mode)
+            self.add_text(f"heading(level: {self.section_level}, ")
 
     def depart_title(self, node: nodes.title) -> None:
         """
         Depart a title node.
 
-        Closes heading() function call.
+        Closes heading() function call and attaches section labels.
 
         Args:
             node: The title node
         """
-        # Close heading() function
-        self.add_text(")\n\n")
+        if self._title_label_ids:
+            # Attach the primary id to the heading; emit invisible anchors
+            # for any additional ids (e.g. explicit `.. _name:` targets)
+            primary, *extras = self._title_label_ids
+            self.add_text(f") <{primary}>")
+            for extra in extras:
+                self.add_text(f"#metadata(none) <{extra}>")
+            self.add_text("]\n\n")
+            self._title_label_ids = []
+        else:
+            # Close heading() function
+            self.add_text(")\n\n")
 
     def visit_subtitle(self, node: nodes.subtitle) -> None:
         """
@@ -279,6 +328,10 @@ class TypstTranslator(SphinxTranslator):
                     # Extract label from :name: option
                     if child.get("names"):
                         self.code_block_label = child.get("names")[0]
+            # Sphinx places the :name: of a captioned code block on the
+            # container itself rather than on the literal_block
+            if not self.code_block_label and node.get("names"):
+                self.code_block_label = node.get("names")[0]
         # Other container types: just process children
         pass
 
@@ -308,6 +361,15 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The paragraph node
         """
+        # Standalone targets (`.. _name:`) preceding a paragraph have their
+        # ids propagated onto the paragraph node; emit invisible anchors so
+        # the labels exist and are attached in the output
+        if node.get("ids"):
+            if self.in_list_item and self.list_item_needs_separator:
+                self.add_text("\n")
+            self.add_text(self._anchor_labels(node["ids"]))
+            self.add_text("\n")
+
         # Skip par() wrapping inside list items
         if self.in_list_item:
             self.in_paragraph = False
@@ -906,8 +968,13 @@ class TypstTranslator(SphinxTranslator):
             # Escape special characters in caption
             escaped_caption = self.code_block_caption
             # Start figure with caption (will add closing bracket in depart)
-            # No # prefix in code mode
-            self.add_text(f"figure(caption: [{escaped_caption}])[\n")
+            if self.code_block_label:
+                # Labels can only be attached in markup mode, so the labelled
+                # figure is wrapped in a markup block: [#figure(...) <label>]
+                self.add_text(f"[#figure(caption: [{escaped_caption}])[\n")
+            else:
+                # No # prefix in code mode
+                self.add_text(f"figure(caption: [{escaped_caption}])[\n")
 
         # If in list item, wrap codly() calls and code block in { } to make it an expression
         if self.in_list_item:
@@ -940,6 +1007,16 @@ class TypstTranslator(SphinxTranslator):
             # No # prefix in code mode
             self.add_text(f"codly-range(highlight: ({highlight_str}))\n")
 
+        # For a :name: option without :caption:, the label must attach to the
+        # raw block itself, which is only possible in markup mode; open a
+        # markup block around the fence: [```...``` <label>]
+        self._literal_block_in_label_wrap = bool(
+            node.get("names")
+            and not (self.in_captioned_code_block and self.code_block_caption)
+        )
+        if self._literal_block_in_label_wrap:
+            self.add_text("[")
+
         # Typst code block syntax: ```language\ncode\n```
         # Extract language if specified
         language = node.get("language", "")
@@ -961,7 +1038,15 @@ class TypstTranslator(SphinxTranslator):
         self.in_literal_block = False
 
         # Close code block
-        self.add_text("\n```\n")
+        self.add_text("\n```")
+
+        # Handle :name: option without :caption: - attach label to the raw
+        # block and close the markup wrapper opened in visit_literal_block
+        if self._literal_block_in_label_wrap:
+            label = node.get("names")[0]
+            self.add_text(f" <{label}>]")
+            self._literal_block_in_label_wrap = False
+        self.add_text("\n")
 
         # Close the { } wrapper if we're in a list item
         if self.in_list_item:
@@ -971,14 +1056,13 @@ class TypstTranslator(SphinxTranslator):
         if self.in_captioned_code_block and self.code_block_caption:
             # Close the figure's trailing content block with ]
             self.add_text("]")
-            # Add label if present
+            # Attach label and close the markup wrapper if present
             if self.code_block_label:
-                self.add_text(f" <{self.code_block_label}>")
+                self.add_text(f" <{self.code_block_label}>]")
             self.add_text("\n\n")
         elif node.get("names"):
-            # Handle :name: option without :caption: - just add label after code block
-            label = node.get("names")[0]
-            self.add_text(f" <{label}>\n\n")
+            # Label already attached inside the markup wrapper above
+            self.add_text("\n")
         else:
             # Normal code block - just add spacing
             self.add_text("\n")
@@ -1134,8 +1218,13 @@ class TypstTranslator(SphinxTranslator):
         self.figure_content = []  # Store figure content (image)
         self.figure_caption = ""  # Store caption text
 
-        # Start figure with potential label (no # prefix in code mode)
-        self.add_text("figure(\n")
+        # Labels can only be attached in markup mode, so labelled figures
+        # are wrapped in a markup block: [#figure(...) <label>]
+        if node.get("ids"):
+            self.add_text("[#figure(\n")
+        else:
+            # Start figure (no # prefix in code mode)
+            self.add_text("figure(\n")
 
     def depart_figure(self, node: nodes.figure) -> None:
         """
@@ -1148,10 +1237,13 @@ class TypstTranslator(SphinxTranslator):
         if self.figure_caption:
             self.add_text(f",\n  caption: [{self.figure_caption}]")
 
-        # Add label if figure has ids
+        # Attach label and close markup block if figure has ids
         if node.get("ids"):
-            label = node["ids"][0]
-            self.add_text(f"\n) <{label}>\n\n")
+            primary, *extras = node["ids"]
+            self.add_text(f"\n) <{primary}>")
+            for extra in extras:
+                self.add_text(f"#metadata(none) <{extra}>")
+            self.add_text("]\n\n")
         else:
             self.add_text("\n)\n\n")
 
@@ -1536,19 +1628,26 @@ class TypstTranslator(SphinxTranslator):
             raise nodes.SkipNode
 
         # Original behavior for non-markup-wrapped targets
-        # Add newline separator if in list item and not first element
-        if self.in_list_item and self.list_item_needs_separator:
-            self.add_text("\n")
-
-        # Generate Typst label if target has ids
-        # In unified code mode, use label() function instead of <label> syntax
+        # Generate invisible anchors if the target kept its ids. A bare
+        # label() statement attaches to nothing in code mode; labels can
+        # only be attached to an element in markup mode, so an invisible
+        # metadata element is labelled instead: [#metadata(none) <label>]
+        # Targets whose ids were propagated to the following node (refid
+        # only) are handled by that node and produce no output here.
         if node.get("ids"):
-            label_id = node["ids"][0]
-            self.add_text(f'label("{label_id}")')
+            # Add newline separator if in list item and not first element
+            if self.in_list_item and self.list_item_needs_separator:
+                self.add_text("\n")
+            else:
+                self._add_paragraph_separator()
 
-        # Mark that next element in list item needs separator
-        if self.in_list_item:
-            self.list_item_needs_separator = True
+            self.add_text(self._anchor_labels(node["ids"]))
+
+            # Mark that next element in list item needs separator
+            if self.in_list_item:
+                self.list_item_needs_separator = True
+            elif not self.in_paragraph:
+                self.add_text("\n")
 
         # Skip processing children as target is typically empty
         raise nodes.SkipNode
@@ -2155,6 +2254,10 @@ class TypstTranslator(SphinxTranslator):
         # Extract math content
         math_content = node.astext()
 
+        # Task 6.3: Labels can only attach in markup mode, so labelled math
+        # is wrapped in a markup block: [#mi(`...`) <label>] / [$...$ <label>]
+        label = node["ids"][0] if node.get("ids") else None
+
         # Task 6.4: Check if this is explicitly marked as Typst native
         is_typst_native = "typst-native" in node.get("classes", [])
 
@@ -2167,15 +2270,16 @@ class TypstTranslator(SphinxTranslator):
             if not is_typst_native and not use_mitex:
                 # Convert LaTeX syntax to Typst native
                 math_content = self._convert_latex_to_typst(math_content)
-            self.add_text(f"${math_content}$")
+            if label:
+                self.add_text(f"[${math_content}$ <{label}>]")
+            else:
+                self.add_text(f"${math_content}$")
         else:
             # Requirement 4.3: LaTeX math via mitex (no # prefix in code mode)
-            self.add_text(f"mi(`{math_content}`)")
-
-        # Task 6.3: Add label if present
-        if "ids" in node and node["ids"]:
-            label = node["ids"][0]
-            self.add_text(f" <{label}>")
+            if label:
+                self.add_text(f"[#mi(`{math_content}`) <{label}>]")
+            else:
+                self.add_text(f"mi(`{math_content}`)")
 
         # Skip children to prevent duplicate output of math content
         raise nodes.SkipNode
@@ -2210,6 +2314,10 @@ class TypstTranslator(SphinxTranslator):
         # Extract math content
         math_content = node.astext()
 
+        # Task 6.3: Labels can only attach in markup mode, so labelled math
+        # is wrapped in a markup block: [#mitex(`...`) <label>]
+        label = node["ids"][0] if node.get("ids") else None
+
         # Task 6.4: Check if this is explicitly marked as Typst native
         is_typst_native = "typst-native" in node.get("classes", [])
 
@@ -2222,15 +2330,16 @@ class TypstTranslator(SphinxTranslator):
             if not is_typst_native and not use_mitex:
                 # Convert LaTeX syntax to Typst native
                 math_content = self._convert_latex_to_typst(math_content)
-            self.add_text(f"$ {math_content} $")
+            if label:
+                self.add_text(f"[$ {math_content} $ <{label}>]")
+            else:
+                self.add_text(f"$ {math_content} $")
         else:
             # Requirement 4.2: LaTeX math via mitex (no # prefix in code mode)
-            self.add_text(f"mitex(`{math_content}`)")
-
-        # Task 6.3: Add label if present
-        if "ids" in node and node["ids"]:
-            label = node["ids"][0]
-            self.add_text(f" <{label}>")
+            if label:
+                self.add_text(f"[#mitex(`{math_content}`) <{label}>]")
+            else:
+                self.add_text(f"mitex(`{math_content}`)")
 
         self.add_text("\n\n")
 
