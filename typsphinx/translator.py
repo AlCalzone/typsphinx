@@ -424,9 +424,15 @@ class TypstTranslator(SphinxTranslator):
         # Escape string content (order matters: backslash first)
         text_content = text_content.replace("\\", "\\\\")  # Backslash
         text_content = text_content.replace('"', '\\"')  # Quote
-        text_content = text_content.replace("\n", "\\n")  # Newline
-        text_content = text_content.replace("\r", "\\r")  # Carriage return
-        text_content = text_content.replace("\t", "\\t")  # Tab
+
+        # Normalize whitespace: docutils Text nodes preserve the soft line
+        # wrapping of the reST source, but "\n" inside a Typst string literal
+        # is a hard line break. Render soft wraps (and stray carriage returns
+        # and tabs) as plain spaces so paragraphs reflow and justify normally.
+        text_content = text_content.replace("\r\n", " ")
+        text_content = text_content.replace("\n", " ")
+        text_content = text_content.replace("\r", " ")
+        text_content = text_content.replace("\t", " ")
 
         # Add separator if in paragraph and not first node
         self._add_paragraph_separator()
