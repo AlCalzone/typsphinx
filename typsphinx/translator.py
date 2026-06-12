@@ -16,6 +16,71 @@ from sphinx.util.docutils import SphinxTranslator
 logger = logging.getLogger(__name__)
 
 
+def _parse_tabularcolumns(
+    spec: str, ncols: int
+) -> Union[tuple, "tuple[Optional[str], Optional[str]]"]:
+    r"""Parse a LaTeX-style tabularcolumns spec into Typst columns/align.
+
+    Supports standard column letters (``l``/``c``/``r``), the tabulary
+    letters (``L``/``C``/``R``/``J``), fixed widths (``p{<len>}``,
+    ``m{<len>}``, ``b{<len>}``) and Sphinx's fraction widths
+    (``\X{num}{den}`` and ``\Y{frac}``).
+
+    Args:
+        spec: The tabularcolumns spec string
+        ncols: The number of columns in the table
+
+    Returns:
+        A ``(columns, align)`` tuple of Typst argument strings. ``align``
+        is None when all columns are left-aligned. Both are None when the
+        spec cannot be mapped (e.g. unsupported syntax or column count
+        mismatch).
+    """
+    token_re = re.compile(
+        r"\\X\{(\d+)\}\{(\d+)\}"  # \X{num}{den}
+        r"|\\Y\{([\d.]+)\}"  # \Y{frac}
+        r"|[pmb]\{\s*([\d.]+)\s*(cm|mm|in|pt|em)\s*\}"  # p{<len>}
+        r"|([LCRJlcrj])"  # column letters
+        r"|(\|)"  # rule (ignored)
+        r"|(\s+)"  # whitespace (ignored)
+        r"|(.)"  # anything else: unsupported
+    )
+    columns: List[str] = []
+    aligns: List[str] = []
+    letters: List[str] = []
+    for match in token_re.finditer(spec):
+        num, den, yfrac, plen, punit, letter, _bar, _ws, other = match.groups()
+        if num:
+            columns.append(f"{int(num) / int(den):g}fr")
+            aligns.append("left")
+        elif yfrac:
+            # sphinx.sty defines \Y{f} as p{f\linewidth}
+            columns.append(f"{float(yfrac):g}fr")
+            aligns.append("left")
+        elif plen:
+            columns.append(plen + punit)
+            aligns.append("left")
+        elif letter:
+            # tabulary balances column widths by content; Typst's auto is
+            # the closest equivalent.
+            letters.append(letter.upper())
+            columns.append("auto")
+            aligns.append({"c": "center", "r": "right"}.get(letter.lower(), "left"))
+        elif other:
+            return None, None
+    if not columns or len(columns) != ncols:
+        return None, None
+    # A uniform letter spec (e.g. |C|C|C|) means equal-width columns.
+    if len(letters) == ncols > 1 and all(le == letters[0] for le in letters):
+        columns = ["1fr"] * ncols
+    columns_arg = "(" + ", ".join(columns) + ")"
+    if all(a == aligns[0] for a in aligns):
+        align_arg = None if aligns[0] == "left" else aligns[0]
+    else:
+        align_arg = "(" + ", ".join(aligns) + ")"
+    return columns_arg, align_arg
+
+
 class TypstTranslator(SphinxTranslator):
     """
     Translator class that converts docutils nodes to Typst markup.
@@ -41,6 +106,8 @@ class TypstTranslator(SphinxTranslator):
         self.in_figure = False
         self.in_table = False
         self.in_thead = False  # Track if currently in table header
+        self.pending_tabular_col_spec: Optional[str] = None  # .. tabularcolumns::
+        self.table_colwidths: List[Any] = []  # colspec colwidth values
         self.in_caption = False
         self.list_stack = []  # Track list nesting: 'bullet' or 'enumerated'
 
@@ -1197,6 +1264,7 @@ class TypstTranslator(SphinxTranslator):
         self.in_table = True
         self.table_cells = []  # Store cells for table generation
         self.table_colcount = 0  # Track number of columns
+        self.table_colwidths = []  # Collected from colspec nodes
 
     def _format_table_cell(self, cell: dict, indent: str = "  ") -> str:
         """
@@ -1227,6 +1295,36 @@ class TypstTranslator(SphinxTranslator):
         params_str = ", ".join(params)
         return f"{indent}table.cell({{{content}}}, {params_str}),\n"
 
+    def _table_columns(self, node: nodes.table) -> "tuple[str, Optional[str]]":
+        """
+        Determine the Typst columns/align arguments for the current table.
+
+        Args:
+            node: The table node
+
+        Returns:
+            A (columns, align) tuple of Typst argument strings; align is
+            None when no explicit alignment is requested.
+        """
+        ncols = self.table_colcount
+        # 1. An explicit .. tabularcolumns:: spec takes precedence
+        if self.pending_tabular_col_spec:
+            columns, align = _parse_tabularcolumns(self.pending_tabular_col_spec, ncols)
+            if columns:
+                return columns, align
+            logger.warning(
+                f"could not map tabularcolumns spec "
+                f"{self.pending_tabular_col_spec!r} to Typst columns",
+                location=node,
+            )
+        # 2. Explicitly given column widths (e.g. list-table :widths:)
+        if "colwidths-given" in node.get("classes", []):
+            widths = [w for w in self.table_colwidths if isinstance(w, (int, float))]
+            if len(widths) == ncols:
+                return "(" + ", ".join(f"{w:g}fr" for w in widths) + ")", None
+        # 3. Default: equal columns
+        return str(ncols), None
+
     def depart_table(self, node: nodes.table) -> None:
         """
         Depart a table node.
@@ -1236,8 +1334,11 @@ class TypstTranslator(SphinxTranslator):
         """
         # Generate Typst table() syntax (no # prefix in unified code mode)
         if self.table_colcount > 0:
+            columns, align = self._table_columns(node)
             # Use self.body.append directly to avoid routing to table_cell_content
-            self.body.append(f"table(\n  columns: {self.table_colcount},\n")
+            self.body.append(f"table(\n  columns: {columns},\n")
+            if align:
+                self.body.append(f"  align: {align},\n")
 
             # Separate header cells from body cells
             header_cells = [cell for cell in self.table_cells if cell.get("is_header")]
@@ -1261,6 +1362,8 @@ class TypstTranslator(SphinxTranslator):
         self.in_table = False
         self.table_cells = []
         self.table_colcount = 0
+        self.table_colwidths = []
+        self.pending_tabular_col_spec = None
 
     def visit_tgroup(self, node: nodes.tgroup) -> None:
         """
@@ -1281,6 +1384,17 @@ class TypstTranslator(SphinxTranslator):
         """
         pass
 
+    def visit_tabular_col_spec(self, node: addnodes.tabular_col_spec) -> None:
+        """
+        Visit a tabular_col_spec node (.. tabularcolumns:: directive).
+
+        Args:
+            node: The tabular_col_spec node
+        """
+        # Remember the spec for the table that follows
+        self.pending_tabular_col_spec = node.get("spec")
+        raise nodes.SkipNode
+
     def visit_colspec(self, node: nodes.colspec) -> None:
         """
         Visit a colspec (column specification) node.
@@ -1288,7 +1402,8 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The colspec node
         """
-        # Column specifications are handled by tgroup
+        # Collect explicit column widths (used for colwidths-given tables)
+        self.table_colwidths.append(node.get("colwidth"))
         raise nodes.SkipNode
 
     def depart_colspec(self, node: nodes.colspec) -> None:
