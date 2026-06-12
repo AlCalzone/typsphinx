@@ -47,6 +47,12 @@ class TypstTranslator(SphinxTranslator):
         # Figure-specific state
         self.figure_content = []
         self.figure_caption = ""
+        self._caption_saved_body: Optional[List[Any]] = (
+            None  # Used by figure captions for body swapping
+        )
+        self._caption_saved_list_state = (
+            None  # Saved (in_list_item, list_item_needs_separator) during captions
+        )
 
         # Code block container state (Issue #20)
         self.in_captioned_code_block = False
@@ -1146,7 +1152,9 @@ class TypstTranslator(SphinxTranslator):
         """
         # Close the figure
         if self.figure_caption:
-            self.add_text(f",\n  caption: [{self.figure_caption}]")
+            # The caption was buffered as code-mode expressions (e.g.
+            # text("..."), emph({...})), so wrap it in a code block {...}
+            self.add_text(f",\n  caption: {{{self.figure_caption}}}")
 
         # Add label if figure has ids
         if node.get("ids"):
@@ -1172,7 +1180,21 @@ class TypstTranslator(SphinxTranslator):
         # We should skip output to avoid duplicate caption text
         if self.in_captioned_code_block:
             raise nodes.SkipNode
-        # For figures, start collecting caption text
+        # For figures, divert output into a temporary buffer so the caption
+        # is not emitted inline after the image; depart_figure emits the
+        # buffered content as the caption: argument instead.
+        if self.in_figure:
+            self._caption_saved_body = self.body
+            self.body = []
+            # Caption children are rendered inside a code block {...}, where
+            # consecutive expressions need line-break separators. Reuse the
+            # list item separator handling for this.
+            self._caption_saved_list_state = (
+                self.in_list_item,
+                self.list_item_needs_separator,
+            )
+            self.in_list_item = True
+            self.list_item_needs_separator = False
         self.in_caption = True
 
     def depart_caption(self, node: nodes.caption) -> None:
@@ -1182,9 +1204,16 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The caption node
         """
-        # Store caption text for figures
-        if self.in_figure:
-            self.figure_caption = node.astext()
+        # Store buffered caption content for figures and restore the body
+        if self.in_figure and self._caption_saved_body is not None:
+            self.figure_caption = "".join(self.body).strip()
+            self.body = self._caption_saved_body
+            self._caption_saved_body = None
+            (
+                self.in_list_item,
+                self.list_item_needs_separator,
+            ) = self._caption_saved_list_state
+            self._caption_saved_list_state = None
         self.in_caption = False
 
     def visit_table(self, node: nodes.table) -> None:
