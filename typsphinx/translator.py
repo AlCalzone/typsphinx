@@ -58,6 +58,9 @@ class TypstTranslator(SphinxTranslator):
         self.paragraph_has_content = False  # Track if paragraph has any content nodes
         self.in_list_item = False  # Track if currently in a list item
         self.in_literal_block = False  # Track if currently in a code block
+        self.in_table_cell_paragraph = (
+            False  # Track if current paragraph is directly inside a table cell
+        )
 
         # Stream-based list rendering state (Issue #61)
         self.is_first_list_item = True  # Track if current item is first in list
@@ -305,12 +308,27 @@ class TypstTranslator(SphinxTranslator):
         Exception: Inside list items, paragraphs are not wrapped in par()
         to avoid syntax like "- par(text(...))" which is invalid.
 
+        Exception: Inside table cells, paragraphs are not wrapped in par()
+        either. The cell is already a {...} content block, and par() breaks
+        Typst's content-based (auto) column sizing. Multiple paragraphs in
+        one cell are separated by parbreak() instead.
+
         Args:
             node: The paragraph node
         """
         # Skip par() wrapping inside list items
         if self.in_list_item:
             self.in_paragraph = False
+            return
+
+        # Emit bare content statements inside table cells; separate
+        # consecutive paragraphs (or content before them) with parbreak()
+        if self.in_table and getattr(self, "table_cell_content", None) is not None:
+            if "".join(self.table_cell_content).strip():
+                self.add_text("\nparbreak()\n")
+            self.in_paragraph = True
+            self.paragraph_has_content = False
+            self.in_table_cell_paragraph = True
             return
 
         # Start par() with {} content block (no # prefix in code mode)
@@ -329,6 +347,14 @@ class TypstTranslator(SphinxTranslator):
         """
         # Skip closing if inside list items
         if self.in_list_item:
+            return
+
+        # Table cell paragraphs are bare statements; just terminate the line
+        if self.in_table_cell_paragraph:
+            self.in_table_cell_paragraph = False
+            self.in_paragraph = False
+            self.paragraph_has_content = False
+            self.add_text("\n")
             return
 
         # Close par({}) content block and add spacing

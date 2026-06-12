@@ -2837,6 +2837,135 @@ def test_table_empty_colspan_rowspan_cells(simple_document, mock_builder):
     assert "table.cell(," not in output
 
 
+def test_table_cell_single_paragraph_not_wrapped_in_par(simple_document, mock_builder):
+    """Test that a paragraph inside a table cell is not wrapped in par().
+
+    The cell is already a {...} content block. Wrapping cell paragraphs in
+    par() breaks Typst's content-based (auto) column sizing, so cells must
+    contain bare content statements instead.
+    """
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+
+    # Create a 1x2 table whose cells contain a single paragraph each
+    table = nodes.table()
+    tgroup = nodes.tgroup(cols=2)
+    tgroup += nodes.colspec(colwidth=1)
+    tgroup += nodes.colspec(colwidth=1)
+
+    tbody = nodes.tbody()
+    row = nodes.row()
+    entry1 = nodes.entry()
+    entry1 += nodes.paragraph(text="Cell 1")
+    entry2 = nodes.entry()
+    entry2 += nodes.paragraph(text="Cell 2")
+    row += entry1
+    row += entry2
+    tbody += row
+    tgroup += tbody
+    table += tgroup
+
+    table.walkabout(translator)
+    output = translator.astext()
+
+    # Cell paragraphs must be bare content statements, not par({...})
+    assert "par(" not in output
+    assert '{text("Cell 1")},' in output
+    assert '{text("Cell 2")},' in output
+
+
+def test_table_cell_multiple_paragraphs_separated_by_parbreak(
+    simple_document, mock_builder
+):
+    """Test that multiple paragraphs in one table cell use parbreak().
+
+    Instead of par({...}) wrappers (which break auto column sizing),
+    consecutive paragraphs inside a cell are separated by parbreak().
+    """
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+
+    # Create a 1x1 table whose cell contains two paragraphs
+    table = nodes.table()
+    tgroup = nodes.tgroup(cols=1)
+    tgroup += nodes.colspec(colwidth=1)
+
+    tbody = nodes.tbody()
+    row = nodes.row()
+    entry = nodes.entry()
+    entry += nodes.paragraph(text="First paragraph")
+    entry += nodes.paragraph(text="Second paragraph")
+    row += entry
+    tbody += row
+    tgroup += tbody
+    table += tgroup
+
+    table.walkabout(translator)
+    output = translator.astext()
+
+    # No par() wrappers inside the cell
+    assert "par(" not in output
+    # Paragraphs are separated by parbreak()
+    assert "parbreak()" in output
+    first = output.index('text("First paragraph")')
+    sep = output.index("parbreak()")
+    second = output.index('text("Second paragraph")')
+    assert first < sep < second
+
+
+def test_table_cell_paragraphs_compile_to_valid_typst(
+    simple_document, mock_builder, tmp_path
+):
+    """Test that the bare-statement cell output is valid, compilable Typst."""
+    import typst
+
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+
+    table = nodes.table()
+    tgroup = nodes.tgroup(cols=2)
+    tgroup += nodes.colspec(colwidth=1)
+    tgroup += nodes.colspec(colwidth=1)
+
+    tbody = nodes.tbody()
+    row = nodes.row()
+    entry1 = nodes.entry()
+    entry1 += nodes.paragraph(text="Single paragraph")
+    entry2 = nodes.entry()
+    entry2 += nodes.paragraph(text="First paragraph")
+    entry2 += nodes.paragraph(text="Second paragraph")
+    row += entry1
+    row += entry2
+    tbody += row
+    tgroup += tbody
+    table += tgroup
+
+    table.walkabout(translator)
+    # Wrap the generated table in a code block as the builder does
+    source = "#{\n" + translator.astext() + "\n}\n"
+
+    typ_file = tmp_path / "table.typ"
+    typ_file.write_text(source)
+    # Raises on compilation errors
+    typst.compile(str(typ_file))
+
+
+def test_paragraph_outside_table_still_wrapped_in_par(simple_document, mock_builder):
+    """Test that ordinary paragraphs (outside tables) keep their par() wrapper."""
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+
+    para = nodes.paragraph(text="Body text")
+    para.walkabout(translator)
+
+    output = translator.astext()
+    assert 'par({text("Body text")})' in output
+
+
 # API description nodes tests (Issue #55)
 
 
