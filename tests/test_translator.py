@@ -1463,8 +1463,10 @@ def test_target_label_generation(simple_document, mock_builder):
 
     output = translator.astext()
 
-    # Check that Typst label is generated (using label() function in unified code mode)
-    assert 'label("my-label")' in output
+    # Check that a linkable anchor is generated. A bare label() expression
+    # is invalid in unified code mode ("cannot join content with label"),
+    # so targets emit an invisible metadata anchor instead.
+    assert "[#metadata(none) <my-label>]" in output
 
 
 def test_reference_to_target(simple_document, mock_builder):
