@@ -1996,6 +1996,123 @@ class TypstTranslator(SphinxTranslator):
                 self.list_item_needs_separator = True
             delattr(self, "_reference_was_list_item_needs_separator")
 
+    def _find_footnote(
+        self, node: nodes.footnote_reference
+    ) -> Optional[nodes.footnote]:
+        """
+        Find the footnote node referenced by a footnote_reference node.
+
+        The lookup map is built lazily from the document's footnote nodes,
+        keyed by both ids (for resolved references) and names (for
+        unresolved references).
+
+        Args:
+            node: The footnote_reference node
+
+        Returns:
+            The matching footnote node, or None if not found
+        """
+        footnote_map = getattr(self, "_footnote_map", None)
+        if footnote_map is None:
+            footnote_map = {}
+            for footnote in self.document.findall(nodes.footnote):
+                for footnote_id in footnote.get("ids", []):
+                    footnote_map[footnote_id] = footnote
+                for footnote_name in footnote.get("names", []):
+                    footnote_map[footnote_name] = footnote
+            self._footnote_map = footnote_map
+
+        for key in (node.get("refid"), node.get("refname")):
+            if key and key in footnote_map:
+                return footnote_map[key]
+        return None
+
+    def visit_footnote_reference(self, node: nodes.footnote_reference) -> None:
+        """
+        Visit a footnote_reference node.
+
+        Generates a native Typst footnote() call at the reference site,
+        containing the body of the referenced footnote. Typst numbers
+        footnotes automatically, so the docutils label is dropped.
+
+        Note: If a footnote is referenced multiple times, its content is
+        duplicated at each reference site.
+
+        Args:
+            node: The footnote_reference node
+
+        Raises:
+            nodes.SkipNode: Always raised; the reference label text is not
+                emitted and the footnote body is rendered here instead.
+        """
+        footnote = self._find_footnote(node)
+        if footnote is None:
+            logger.warning(
+                f"Footnote reference has no matching footnote: {node.astext()}"
+            )
+            raise nodes.SkipNode
+
+        # Add separator if in paragraph and not first node
+        self._add_paragraph_separator()
+
+        # Add newline separator if in list item and not first element
+        if self.in_list_item and self.list_item_needs_separator:
+            self.add_text("\n")
+
+        # Determine if we need # prefix (in markup mode)
+        prefix = "#" if self._in_markup_mode else ""
+
+        self.add_text(f"{prefix}footnote({{")
+
+        # Save surrounding state before rendering the footnote body inline
+        was_in_paragraph = self.in_paragraph
+        was_paragraph_has_content = self.paragraph_has_content
+        was_in_list_item = self.in_list_item
+        was_list_item_needs_separator = self.list_item_needs_separator
+
+        # Render the footnote body like list-item content: paragraphs are
+        # not wrapped in par() and siblings are separated by newlines.
+        self.in_paragraph = False
+        self.in_list_item = True
+        self.list_item_needs_separator = False
+
+        try:
+            for child in footnote.children:
+                # Skip the label; Typst numbers footnotes automatically
+                if isinstance(child, nodes.label):
+                    continue
+                child.walkabout(self)
+        finally:
+            self.in_paragraph = was_in_paragraph
+            self.paragraph_has_content = was_paragraph_has_content
+            self.in_list_item = was_in_list_item
+            self.list_item_needs_separator = was_list_item_needs_separator
+
+        self.add_text("})")
+
+        # Mark that content was added for following siblings
+        if self.in_list_item:
+            self.list_item_needs_separator = True
+
+        # Don't emit the reference's own label text
+        raise nodes.SkipNode
+
+    def visit_footnote(self, node: nodes.footnote) -> None:
+        """
+        Visit a footnote node.
+
+        Footnote bodies are rendered at the reference site (see
+        visit_footnote_reference), so the footnote node itself (including
+        its label child) is skipped in the document flow.
+
+        Args:
+            node: The footnote node
+
+        Raises:
+            nodes.SkipNode: Always raised to skip the footnote in the flow
+        """
+        raise nodes.SkipNode
+
     def unknown_visit(self, node: nodes.Node) -> None:
         """
         Handle unknown nodes during visit.
