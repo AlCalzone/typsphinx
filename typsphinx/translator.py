@@ -90,6 +90,90 @@ class TypstTranslator(SphinxTranslator):
             None  # Used by definition lists for body swapping
         )
 
+        # Same-document reference support: collect the Typst labels that
+        # refid references in this document point to, so that the elements
+        # owning those ids attach a matching label (see _refid_label()).
+        self._referenced_labels = set()
+        for ref in document.findall(nodes.reference):
+            refid = ref.get("refid")
+            if refid:
+                label = self._refid_label(refid)
+                if label:
+                    self._referenced_labels.add(label)
+
+    def _refid_label(self, refid: str) -> Optional[str]:
+        """
+        Return the Typst label name for a same-document target id.
+
+        Propagated targets (e.g. ``.. _name:`` before a section) add their id
+        to the following element, whose first id is used as the Typst label.
+        Resolving the refid to that element's first id keeps the emitted
+        ``link(<label>, ...)`` consistent with the label attached to the
+        element itself.
+
+        Args:
+            refid: The target id from a reference node's ``refid`` attribute
+
+        Returns:
+            The label name to use in ``link(<label>, ...)``, or None if the
+            target element is of a kind that gets no label attached (the
+            reference then falls back to plain text)
+        """
+        target_node = self.document.ids.get(refid)
+        if target_node is None or not target_node.get("ids"):
+            return None
+
+        if isinstance(target_node, nodes.paragraph):
+            # Paragraphs attach labels when referenced, except inside list
+            # items where they are not wrapped in par() (see visit_paragraph)
+            parent = target_node.parent
+            while parent is not None:
+                if isinstance(parent, nodes.list_item):
+                    return None
+                parent = parent.parent
+            return target_node["ids"][0]
+
+        if isinstance(target_node, (nodes.section, nodes.table)):
+            # Sections and tables attach labels when referenced
+            return target_node["ids"][0]
+
+        if isinstance(target_node, (nodes.figure, nodes.math, nodes.math_block)):
+            # These elements always attach their first id as a label
+            return target_node["ids"][0]
+
+        return None
+
+    def _label_to_attach(self, node: nodes.Element) -> Optional[str]:
+        """
+        Return the label to attach to a node targeted by a same-document
+        reference, or None if the node is not referenced.
+
+        Args:
+            node: The element that may need a Typst label
+
+        Returns:
+            The label name, or None if no reference targets this node
+        """
+        ids = node.get("ids")
+        if ids and ids[0] in self._referenced_labels:
+            return ids[0]
+        return None
+
+    def _title_label(self, node: nodes.title) -> Optional[str]:
+        """
+        Return the label to attach to a section title, or None.
+
+        Args:
+            node: The title node
+
+        Returns:
+            The label of the enclosing section if it is targeted by a
+            same-document reference, else None
+        """
+        if isinstance(node.parent, nodes.section):
+            return self._label_to_attach(node.parent)
+        return None
+
     def astext(self) -> str:
         """
         Return the translated text as a string.
@@ -183,6 +267,13 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The title node
         """
+        # If a same-document reference targets the enclosing section, wrap
+        # the heading in a markup block so a label can be attached (labels
+        # can only be attached in markup mode)
+        label = self._title_label(node)
+        if label:
+            self.add_text("[#")
+
         # Use heading() function (no # prefix in code mode)
         self.add_text(f"heading(level: {self.section_level}, ")
 
@@ -195,8 +286,13 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The title node
         """
-        # Close heading() function
-        self.add_text(")\n\n")
+        # Close heading() function, attaching the section label if a
+        # same-document reference targets this section (see visit_title)
+        label = self._title_label(node)
+        if label:
+            self.add_text(f") <{label}>]\n\n")
+        else:
+            self.add_text(")\n\n")
 
     def visit_subtitle(self, node: nodes.subtitle) -> None:
         """
@@ -316,7 +412,14 @@ class TypstTranslator(SphinxTranslator):
         # Start par() with {} content block (no # prefix in code mode)
         self.in_paragraph = True
         self.paragraph_has_content = False
-        self.add_text("par({")
+
+        # If a same-document reference targets this paragraph (e.g. via a
+        # ``.. _name:`` target propagated onto it), wrap it in a markup
+        # block so a label can be attached (labels require markup mode)
+        if self._label_to_attach(node):
+            self.add_text("[#par({")
+        else:
+            self.add_text("par({")
 
     def depart_paragraph(self, node: nodes.paragraph) -> None:
         """
@@ -331,10 +434,15 @@ class TypstTranslator(SphinxTranslator):
         if self.in_list_item:
             return
 
-        # Close par({}) content block and add spacing
+        # Close par({}) content block, attaching the label if a
+        # same-document reference targets this paragraph (see visit_paragraph)
         self.in_paragraph = False
         self.paragraph_has_content = False
-        self.add_text("})\n\n")
+        label = self._label_to_attach(node)
+        if label:
+            self.add_text(f"}}) <{label}>]\n\n")
+        else:
+            self.add_text("})\n\n")
 
     def visit_comment(self, node: nodes.comment) -> None:
         """
@@ -1236,7 +1344,14 @@ class TypstTranslator(SphinxTranslator):
         """
         # Generate Typst table() syntax (no # prefix in unified code mode)
         if self.table_colcount > 0:
+            # If a same-document reference targets this table, wrap it in a
+            # markup block so a label can be attached (labels require markup
+            # mode)
+            label = self._label_to_attach(node)
+
             # Use self.body.append directly to avoid routing to table_cell_content
+            if label:
+                self.body.append("[#")
             self.body.append(f"table(\n  columns: {self.table_colcount},\n")
 
             # Separate header cells from body cells
@@ -1256,7 +1371,10 @@ class TypstTranslator(SphinxTranslator):
             for cell in body_cells:
                 self.body.append(self._format_table_cell(cell, indent="  "))
 
-            self.body.append(")\n\n")
+            if label:
+                self.body.append(f") <{label}>]\n\n")
+            else:
+                self.body.append(")\n\n")
 
         self.in_table = False
         self.table_cells = []
@@ -1927,14 +2045,17 @@ class TypstTranslator(SphinxTranslator):
         was_list_item_needs_separator = self.list_item_needs_separator
         self.list_item_needs_separator = False
 
-        # Get the reference URI
+        # Get the reference target: refuri for external/cross-document
+        # references, refid for same-document references (e.g. resolved
+        # :ref:/:numref: roles pointing into the current document)
         refuri = node.get("refuri", "")
+        refid = node.get("refid", "")
 
         # Handle empty URLs (Typst 0.14+ rejects empty URLs)
         # This can occur with unresolved references, broken cross-references,
         # or malformed reStructuredText. Instead of generating invalid link("", ...),
         # we skip the link wrapper and render content as plain text.
-        if not refuri:
+        if not refuri and not refid:
             logger.warning(
                 f"Reference node has empty URL. "
                 f"Link will be rendered as plain text. "
@@ -1943,11 +2064,30 @@ class TypstTranslator(SphinxTranslator):
             self._skip_link_wrapper = True
             return
 
+        # Same-document reference: link to the in-document label, but only
+        # if the target element attaches a matching label. Otherwise fall
+        # back to plain text instead of emitting a dangling label that
+        # would break Typst compilation.
+        refid_label = None
+        if not refuri:
+            refid_label = self._refid_label(refid)
+            if refid_label is None:
+                logger.warning(
+                    f"Same-document reference target '{refid}' is not "
+                    f"supported. Link will be rendered as plain text: "
+                    f"{node.astext()}"
+                )
+                self._skip_link_wrapper = True
+                return
+
         # Determine if we need # prefix (in markup mode)
         prefix = "#" if self._in_markup_mode else ""
 
+        if refid_label is not None:
+            # Same-document reference: link to the in-document label
+            self.add_text(f"{prefix}link(<{refid_label}>, ")
         # Check if it's an internal reference (starts with #)
-        if refuri.startswith("#"):
+        elif refuri.startswith("#"):
             # Internal reference to a label
             label = refuri[1:]  # Remove the #
             self.add_text(f"{prefix}link(<{label}>, ")
