@@ -7,6 +7,7 @@ verifying that relative paths in #include() directives are correctly generated.
 Requirements: 3.1, 3.2, 3.3, 5.1, 5.2
 """
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -292,6 +293,111 @@ class TestSiblingDirectoryReferences:
         assert (
             'include("../chapter2/doc2.typ")' in content
         ), 'Expected relative path include("../chapter2/doc2.typ") not found'
+
+
+class TestNestedToctreeHeadingLevels:
+    """Test that nested toctrees compound heading offsets correctly.
+
+    With a 3-level toctree tree (master -> part -> chapter -> section),
+    every document's headings must end up one level below its parent's.
+    Typst's ``set heading(offset: ..)`` is absolute (not cumulative) and an
+    explicit ``level`` argument overrides any offset in scope, so:
+
+    - titles must be emitted as ``heading(depth: N, ...)`` (depth composes
+      with the surrounding offset), and
+    - each toctree must emit ``set heading(offset: D + 1)`` where D is the
+      including document's own depth in the global toctree (master = 0).
+    """
+
+    @pytest.fixture
+    def built_dir(self, multi_level_dir, temp_build_dir):
+        """Build the multi-level project and return the output directory."""
+        result = subprocess.run(
+            [
+                "uv",
+                "run",
+                "sphinx-build",
+                "-b",
+                "typst",
+                str(multi_level_dir),
+                str(temp_build_dir),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, f"sphinx-build failed: {result.stderr}"
+        return temp_build_dir
+
+    def test_titles_use_depth_not_level(self, built_dir):
+        """Titles must use heading(depth: ...) so toctree offsets apply.
+
+        In Typst, heading(level: N) overrides any set heading(offset: ..)
+        in scope, which would flatten all included documents to the same
+        heading level regardless of nesting.
+        """
+        for typ_file in [
+            "index.typ",
+            "part1/index.typ",
+            "part1/chapter1/index.typ",
+            "part1/chapter1/section1.typ",
+        ]:
+            content = (built_dir / typ_file).read_text()
+            assert "heading(depth: 1, " in content, (
+                f"{typ_file}: expected heading(depth: 1, ...) for the "
+                f"document title"
+            )
+            assert "heading(level:" not in content, (
+                f"{typ_file}: heading(level: ...) overrides "
+                f"set heading(offset: ..) and must not be emitted"
+            )
+
+    def test_subsection_uses_depth_two(self, built_dir):
+        """A subsection within a document must be emitted at depth 2."""
+        content = (built_dir / "part1" / "chapter1" / "section1.typ").read_text()
+        assert "heading(depth: 2, " in content
+
+    def test_toctree_offset_compounds_with_document_depth(self, built_dir):
+        """Each toctree's offset must reflect the including document's depth.
+
+        master (depth 0) -> offset 1, part (depth 1) -> offset 2,
+        chapter (depth 2) -> offset 3.  The constant offset 1 emitted for
+        every toctree collapses deeper nesting because Typst offsets are
+        absolute, not cumulative.
+        """
+        expected = {
+            "index.typ": 1,
+            "part1/index.typ": 2,
+            "part1/chapter1/index.typ": 3,
+        }
+        for typ_file, offset in expected.items():
+            content = (built_dir / typ_file).read_text()
+            assert f"set heading(offset: {offset})" in content, (
+                f"{typ_file}: expected set heading(offset: {offset}), "
+                f"got: "
+                f"{[ln.strip() for ln in content.splitlines() if 'offset' in ln]}"
+            )
+
+    def test_rendered_heading_levels_form_hierarchy(self, built_dir):
+        """The composed depth+offset levels must form a strict hierarchy.
+
+        master title -> 1, part title -> 2, chapter title -> 3,
+        section title -> 4, subsection -> 5.
+        """
+        # (file, own depth in toctree tree, expected level of its title)
+        layout = [
+            ("index.typ", 0, 1),
+            ("part1/index.typ", 1, 2),
+            ("part1/chapter1/index.typ", 2, 3),
+            ("part1/chapter1/section1.typ", 3, 4),
+        ]
+        for typ_file, doc_depth, expected_level in layout:
+            content = (built_dir / typ_file).read_text()
+            match = re.search(r"heading\(depth: (\d+), ", content)
+            assert match, f"{typ_file}: no heading(depth: ...) found"
+            # The offset inherited from the parent's toctree scope equals
+            # the document's own depth; final level = depth + offset.
+            inherited_offset = doc_depth
+            assert int(match.group(1)) + inherited_offset == expected_level
 
 
 @pytest.mark.skipif(not TYPST_AVAILABLE, reason="typst-py not installed")
