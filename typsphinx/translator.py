@@ -47,6 +47,10 @@ class TypstTranslator(SphinxTranslator):
         # Figure-specific state
         self.figure_content = []
         self.figure_caption = ""
+        self._figure_label: Optional[str] = None
+
+        # Table-specific state
+        self.table_title = ""  # Caption of the current table (".. table:: ...")
 
         # Code block container state (Issue #20)
         self.in_captioned_code_block = False
@@ -183,6 +187,12 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The title node
         """
+        # Table titles (".. table:: Caption") become the caption of the
+        # generated figure(table(...)) in depart_table(), not a heading
+        if self.in_table:
+            self.table_title = node.astext()
+            raise nodes.SkipNode
+
         # Use heading() function (no # prefix in code mode)
         self.add_text(f"heading(level: {self.section_level}, ")
 
@@ -1126,6 +1136,8 @@ class TypstTranslator(SphinxTranslator):
         Visit a figure node.
 
         Generates figure() function call (no # prefix in code mode).
+        Labelled figures are wrapped in a markup block ([#figure(...) <label>])
+        because Typst's <label> syntax is only valid in markup mode.
 
         Args:
             node: The figure node
@@ -1133,9 +1145,14 @@ class TypstTranslator(SphinxTranslator):
         self.in_figure = True
         self.figure_content = []  # Store figure content (image)
         self.figure_caption = ""  # Store caption text
+        self._figure_label = node["ids"][0] if node.get("ids") else None
 
-        # Start figure with potential label (no # prefix in code mode)
-        self.add_text("figure(\n")
+        # Start figure with potential label
+        if self._figure_label:
+            # Markup block so the trailing <label> is valid Typst syntax
+            self.add_text("[#figure(\n")
+        else:
+            self.add_text("figure(\n")
 
     def depart_figure(self, node: nodes.figure) -> None:
         """
@@ -1148,16 +1165,16 @@ class TypstTranslator(SphinxTranslator):
         if self.figure_caption:
             self.add_text(f",\n  caption: [{self.figure_caption}]")
 
-        # Add label if figure has ids
-        if node.get("ids"):
-            label = node["ids"][0]
-            self.add_text(f"\n) <{label}>\n\n")
+        # Add label if figure has ids (and close the markup block wrapper)
+        if self._figure_label:
+            self.add_text(f"\n) <{self._figure_label}>]\n\n")
         else:
             self.add_text("\n)\n\n")
 
         self.in_figure = False
         self.figure_content = []
         self.figure_caption = ""
+        self._figure_label = None
 
     def visit_caption(self, node: nodes.caption) -> None:
         """
@@ -1172,7 +1189,11 @@ class TypstTranslator(SphinxTranslator):
         # We should skip output to avoid duplicate caption text
         if self.in_captioned_code_block:
             raise nodes.SkipNode
-        # For figures, start collecting caption text
+        # For figures, store the caption text for depart_figure() and skip
+        # the children so the caption is not duplicated in the figure body
+        if self.in_figure:
+            self.figure_caption = node.astext()
+            raise nodes.SkipNode
         self.in_caption = True
 
     def depart_caption(self, node: nodes.caption) -> None:
@@ -1182,9 +1203,6 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The caption node
         """
-        # Store caption text for figures
-        if self.in_figure:
-            self.figure_caption = node.astext()
         self.in_caption = False
 
     def visit_table(self, node: nodes.table) -> None:
@@ -1197,6 +1215,7 @@ class TypstTranslator(SphinxTranslator):
         self.in_table = True
         self.table_cells = []  # Store cells for table generation
         self.table_colcount = 0  # Track number of columns
+        self.table_title = ""  # Caption from ".. table:: Caption"
 
     def _format_table_cell(self, cell: dict, indent: str = "  ") -> str:
         """
@@ -1236,7 +1255,19 @@ class TypstTranslator(SphinxTranslator):
         """
         # Generate Typst table() syntax (no # prefix in unified code mode)
         if self.table_colcount > 0:
+            # Captioned tables are wrapped in figure(table(...), caption: [...])
+            # so Typst numbers them and ref()/<label> can target them.
+            # The markup block ([#figure(...) <label>]) is required because
+            # Typst's <label> syntax is only valid in markup mode.
+            label = node["ids"][0] if node.get("ids") else None
+            wrap_in_figure = bool(self.table_title)
+
             # Use self.body.append directly to avoid routing to table_cell_content
+            if wrap_in_figure:
+                if label:
+                    self.body.append("[#figure(\n")
+                else:
+                    self.body.append("figure(\n")
             self.body.append(f"table(\n  columns: {self.table_colcount},\n")
 
             # Separate header cells from body cells
@@ -1256,11 +1287,20 @@ class TypstTranslator(SphinxTranslator):
             for cell in body_cells:
                 self.body.append(self._format_table_cell(cell, indent="  "))
 
-            self.body.append(")\n\n")
+            if wrap_in_figure:
+                self.body.append("),\n")
+                self.body.append(f"  caption: [{self.table_title}]\n")
+                if label:
+                    self.body.append(f") <{label}>]\n\n")
+                else:
+                    self.body.append(")\n\n")
+            else:
+                self.body.append(")\n\n")
 
         self.in_table = False
         self.table_cells = []
         self.table_colcount = 0
+        self.table_title = ""
 
     def visit_tgroup(self, node: nodes.tgroup) -> None:
         """
@@ -1561,6 +1601,64 @@ class TypstTranslator(SphinxTranslator):
             node: The target node
         """
         # Target is handled in visit
+        pass
+
+    def visit_typst_ref(self, node: nodes.Element) -> None:
+        """
+        Visit a typst_ref node (native Typst cross-reference).
+
+        Emits ref(label("<target>")) so Typst itself renders the reference
+        text (e.g. "Figure 1"), guaranteeing it matches the numbering that
+        Typst assigns to the referenced figure or table caption.
+
+        These nodes are produced by TypstNumrefTransform from :numref:
+        pending_xref nodes (see typsphinx.transforms).
+
+        Args:
+            node: The typst_ref node
+
+        Raises:
+            nodes.SkipNode: Always raised, the node has no children to visit
+        """
+        # Escape the label target for use inside a Typst string literal
+        target = node["target"].replace("\\", "\\\\").replace('"', '\\"')
+
+        # Add separators consistent with visit_Text()
+        self._add_paragraph_separator()
+        if self.in_desc_parameter:
+            if self._desc_parameter_has_content:
+                self.add_text(" + ")
+        elif self._in_link:
+            if self._link_has_content:
+                self.add_text(" + ")
+        elif self.in_list_item and self.list_item_needs_separator:
+            self.add_text("\n")
+
+        # ref() needs a # prefix in markup mode, none in code mode
+        prefix = "#" if self._in_markup_mode else ""
+        self.add_text(f'{prefix}ref(label("{target}"))')
+
+        # Mark that content was added (consistent with visit_Text())
+        if self.in_desc_parameter:
+            self._desc_parameter_has_content = True
+        elif self._in_link:
+            self._link_has_content = True
+        elif self.in_list_item:
+            self.list_item_needs_separator = True
+
+        raise nodes.SkipNode
+
+    def depart_typst_ref(self, node: nodes.Element) -> None:
+        """
+        Depart a typst_ref node.
+
+        Args:
+            node: The typst_ref node
+
+        Note:
+            This method is not called when SkipNode is raised in
+            visit_typst_ref.
+        """
         pass
 
     def visit_pending_xref(self, node: nodes.Node) -> None:

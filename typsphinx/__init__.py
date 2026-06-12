@@ -19,6 +19,7 @@ from typing import Any, Dict
 from sphinx.application import Sphinx
 
 from typsphinx.builder import TypstBuilder, TypstPDFBuilder
+from typsphinx.transforms import TypstNumrefTransform
 
 
 def setup(app: Sphinx) -> Dict[str, Any]:
@@ -35,6 +36,10 @@ def setup(app: Sphinx) -> Dict[str, Any]:
     """
     app.add_builder(TypstBuilder)
     app.add_builder(TypstPDFBuilder)
+
+    # Convert :numref: references to native Typst ref() for typst builders
+    # (only runs for the typst/typstpdf builders, see TypstNumrefTransform)
+    app.add_post_transform(TypstNumrefTransform)
 
     # Register configuration values
     app.add_config_value("typst_documents", [], "html", [list])
