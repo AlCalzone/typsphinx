@@ -318,11 +318,18 @@ class TypstTranslator(SphinxTranslator):
         """
         Visit a title node.
 
-        Generates heading() function call with level parameter.
+        Generates heading() function call with depth parameter.
         Child text nodes will be wrapped in text() automatically.
 
         Args:
             node: The title node
+
+        Notes:
+            ``depth`` is used instead of ``level`` because an explicit
+            ``level`` argument overrides any ``set heading(offset: ..)``
+            in scope, while ``depth`` composes with it. The offset emitted
+            around toctree includes (see visit_toctree) thus shifts the
+            headings of included documents to the correct final level.
         """
         # Admonition titles are hoisted into the clue's title: parameter
         # by _visit_admonition; do not emit them again inside the body
@@ -348,7 +355,7 @@ class TypstTranslator(SphinxTranslator):
             return
 
         # Use heading() function (no # prefix in code mode)
-        self.add_text(f"heading(level: {self.section_level}, ")
+        self.add_text(f"heading(depth: {self.section_level}, ")
 
     def depart_title(self, node: nodes.title) -> None:
         """
@@ -2140,18 +2147,51 @@ class TypstTranslator(SphinxTranslator):
 
             return relative_path
 
+    def _toctree_depth(self, docname: Optional[str]) -> int:
+        """
+        Return the depth of a document in the global toctree (root = 0).
+
+        The depth is computed by walking up a child -> parent map built
+        from ``env.toctree_includes``. Documents that are not included by
+        any toctree (e.g. the master document) have depth 0.
+
+        Args:
+            docname: The canonical document name, or None
+
+        Returns:
+            The number of toctree hops from a root document to docname
+        """
+        env = getattr(self.builder, "env", None)
+        includes = getattr(env, "toctree_includes", None)
+        if not docname or not includes:
+            return 0
+
+        parents = {}
+        for parent, children in includes.items():
+            for child in children:
+                parents.setdefault(child, parent)
+
+        depth = 0
+        seen = set()
+        current = docname
+        while current in parents and current not in seen:
+            seen.add(current)
+            current = parents[current]
+            depth += 1
+        return depth
+
     def visit_toctree(self, node: nodes.Node) -> None:
         """
         Visit a toctree node (Sphinx table of contents tree).
 
         Requirement 13: Multi-document integration and toctree processing
         - Generate #include() for each entry
-        - Apply #set heading(offset: 1) to lower heading levels
+        - Apply #set heading(offset: ..) to lower heading levels
         - Issue #5: Fix relative paths for nested toctrees
           - Calculate relative paths from current document
         - Issue #7: Simplify toctree output with single content block
           - Generate single #[...] block containing all includes
-          - Apply #set heading(offset: 1) once per toctree
+          - Apply #set heading(offset: ..) once per toctree
 
         Args:
             node: The toctree node
@@ -2161,6 +2201,13 @@ class TypstTranslator(SphinxTranslator):
             within a single content block #[...] to apply heading offset without
             displaying the block delimiters in the output. This simplifies the
             generated Typst code and improves readability.
+
+            Typst's ``set heading(offset: ..)`` is absolute, not cumulative:
+            a nested ``offset: 1`` does not add to an outer ``offset: 1``.
+            The offset therefore has to encode the including document's own
+            depth in the global toctree, so that documents included from
+            deeper levels keep descending in the heading hierarchy
+            (master -> offset 1, its children's toctrees -> offset 2, ...).
         """
         # Get entries from the toctree node
         entries = node.get("entries", [])
@@ -2183,8 +2230,11 @@ class TypstTranslator(SphinxTranslator):
         # Generate scope block for all includes (unified code mode)
         # Use {...} scope block to isolate set rules while maintaining code mode
         # Start scope block (no # prefix in code mode)
+        # The offset is the including document's own toctree depth plus one,
+        # because Typst offsets are absolute rather than cumulative.
+        offset = self._toctree_depth(current_docname) + 1
         self.add_text("{\n")
-        self.add_text("  set heading(offset: 1)\n")
+        self.add_text(f"  set heading(offset: {offset})\n")
 
         # Generate include() for each entry within the scope block
         # Each included file has its own imports, so block scope is safe
