@@ -1406,10 +1406,10 @@ def test_block_quote_conversion(simple_document, mock_builder):
     translator.depart_block_quote(block_quote)
 
     output = translator.astext()
-    # Typst block quote syntax: #quote[...]
-    assert "quote[" in output
+    # Typst block quote syntax with a code-mode body: quote(block: true, {...})
+    assert "quote(block: true, {" in output
     assert "This is a quoted text." in output
-    assert "]" in output
+    assert "})" in output
 
 
 def test_block_quote_with_attribution(simple_document, mock_builder):
@@ -1439,11 +1439,11 @@ def test_block_quote_with_attribution(simple_document, mock_builder):
     translator.depart_block_quote(block_quote)
 
     output = translator.astext()
-    # Typst block quote with attribution
-    assert "quote[" in output
+    # Typst block quote with attribution as a code-mode named argument
+    assert "quote(block: true, {" in output
     assert "To be or not to be." in output
-    assert "attribution:" in output and "Shakespeare" in output
-    assert "]" in output
+    assert "}, attribution: {" in output and "Shakespeare" in output
+    assert "})" in output
 
 
 def test_nested_block_quote(simple_document, mock_builder):
@@ -1478,8 +1478,8 @@ def test_nested_block_quote(simple_document, mock_builder):
     translator.depart_block_quote(outer_quote)
 
     output = translator.astext()
-    # Nested quotes should both use #quote[]
-    assert output.count("quote[") == 2
+    # Nested quotes should both use quote(block: true, {...})
+    assert output.count("quote(block: true, {") == 2
     assert "Outer quote." in output
     assert "Inner quote." in output
 
