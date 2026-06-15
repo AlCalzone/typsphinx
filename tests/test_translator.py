@@ -289,6 +289,70 @@ def test_multiple_paragraphs_conversion(simple_document, mock_builder):
     assert 'par({text("Second paragraph.")})' in output
 
 
+def test_soft_wrapped_paragraph_text_becomes_spaces(simple_document, mock_builder):
+    """Test that source line wraps in text nodes become spaces, not line breaks.
+
+    docutils Text nodes preserve the soft line wrapping of the reST source.
+    A newline inside a Typst string literal is a hard line break, so emitting
+    it verbatim breaks paragraph flow and justification.
+    """
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+
+    text = "This paragraph is written\nacross two source lines."
+    para = nodes.paragraph(text=text)
+    translator.visit_paragraph(para)
+    translator.visit_Text(nodes.Text(text))
+    translator.depart_Text(nodes.Text(text))
+    translator.depart_paragraph(para)
+
+    output = translator.astext()
+    # Soft wrap must be rendered as a plain space
+    assert 'text("This paragraph is written across two source lines.")' in output
+    # No escaped line break may leak into the Typst string
+    assert "\\n" not in output
+
+
+def test_whitespace_normalization_in_text(simple_document, mock_builder):
+    """Test that carriage returns and tabs in text nodes become spaces."""
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+
+    text = "one\r\ntwo\rthree\tfour"
+    para = nodes.paragraph(text=text)
+    translator.visit_paragraph(para)
+    translator.visit_Text(nodes.Text(text))
+    translator.depart_Text(nodes.Text(text))
+    translator.depart_paragraph(para)
+
+    output = translator.astext()
+    assert 'text("one two three four")' in output
+    assert "\\n" not in output
+    assert "\\r" not in output
+    assert "\\t" not in output
+
+
+def test_literal_block_keeps_newlines(simple_document, mock_builder):
+    """Test that literal blocks keep their newlines (line structure matters)."""
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+
+    code = "def hello():\n    print('Hello')"
+    literal_block = nodes.literal_block(text=code)
+    literal_block["language"] = "python"
+    translator.visit_literal_block(literal_block)
+    translator.visit_Text(nodes.Text(code))
+    translator.depart_Text(nodes.Text(code))
+    translator.depart_literal_block(literal_block)
+
+    output = translator.astext()
+    # Newlines inside code blocks must be preserved verbatim
+    assert "def hello():\n    print('Hello')" in output
+
+
 def test_emphasis_conversion(simple_document, mock_builder):
     """Test that emphasis (italic) nodes are converted correctly."""
     from typsphinx.translator import TypstTranslator
