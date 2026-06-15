@@ -1736,6 +1736,70 @@ def test_figure_without_caption(simple_document, mock_builder):
     assert "simple.png" in output
 
 
+def test_figure_caption_not_duplicated(simple_document, mock_builder):
+    """Test that figure captions are emitted only once, as the caption: argument.
+
+    Regression test: the caption's Text children used to be emitted inline
+    right after the image (producing invalid Typst such as
+    ``image("...")text("caption")``) while depart_caption also stored the
+    caption for the ``caption:`` parameter, duplicating it.
+    """
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+
+    figure = nodes.figure()
+    image = nodes.image(uri="diagram.png")
+    caption = nodes.caption()
+    caption += nodes.Text("Figure caption text")
+
+    figure += image
+    figure += caption
+
+    figure.walkabout(translator)
+
+    output = translator.astext()
+
+    # The caption must not leak inline after the image (invalid Typst:
+    # two adjacent expressions without a separator -> "expected comma")
+    assert 'image("diagram.png")text(' not in output
+
+    # The caption text must appear exactly once (as the caption: argument)
+    assert output.count("Figure caption text") == 1
+    assert "caption:" in output
+
+
+def test_figure_caption_preserves_inline_markup(simple_document, mock_builder):
+    """Test that inline markup in figure captions is preserved."""
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+
+    figure = nodes.figure()
+    image = nodes.image(uri="diagram.png")
+    caption = nodes.caption()
+    caption += nodes.Text("An ")
+    emphasis = nodes.emphasis()
+    emphasis += nodes.Text("important")
+    caption += emphasis
+    caption += nodes.Text(" figure")
+
+    figure += image
+    figure += caption
+
+    figure.walkabout(translator)
+
+    output = translator.astext()
+
+    # Inline markup must be preserved in the caption: argument
+    assert "caption:" in output
+    assert "emph(" in output
+    assert "important" in output
+    # Nothing from the caption may leak inline after the image
+    assert 'image("diagram.png")text(' not in output
+    assert 'image("diagram.png")emph(' not in output
+
+
 def test_target_label_generation(simple_document, mock_builder):
     """Test that target nodes generate attached Typst labels."""
     from typsphinx.translator import TypstTranslator
