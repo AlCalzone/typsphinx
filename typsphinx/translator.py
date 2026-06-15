@@ -401,6 +401,39 @@ class TypstTranslator(SphinxTranslator):
         """
         pass
 
+    def visit_meta(self, node: nodes.Node) -> None:
+        """
+        Visit a meta node.
+
+        Meta nodes carry HTML head metadata (e.g. from the ``.. meta::``
+        directive) which has no representation in Typst/PDF output, so
+        they are skipped entirely.
+
+        Note:
+            Dispatch is based on the node class name, so this handles both
+            ``docutils.nodes.meta`` (docutils >= 0.18) and the legacy
+            ``sphinx.addnodes.meta`` used by older Sphinx versions.
+
+        Args:
+            node: The meta node
+
+        Raises:
+            nodes.SkipNode: Always raised to skip the meta node
+        """
+        raise nodes.SkipNode
+
+    def depart_meta(self, node: nodes.Node) -> None:
+        """
+        Depart a meta node.
+
+        Args:
+            node: The meta node
+
+        Note:
+            This method is not called when SkipNode is raised in visit_meta.
+        """
+        pass
+
     def visit_Text(self, node: nodes.Text) -> None:
         """
         Visit a text node.
