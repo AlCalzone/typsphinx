@@ -127,6 +127,49 @@ class TypstTranslator(SphinxTranslator):
         if self.in_paragraph:
             self.paragraph_has_content = True
 
+    def _add_expression_separator(self) -> None:
+        """
+        Add the statement separator required before a new expression.
+
+        In unified code mode, adjacent expressions must be separated
+        (by a newline or semicolon). This emits the same separators
+        that visit_Text uses:
+
+        - In paragraphs: newline via _add_paragraph_separator()
+        - In desc_parameter or link(): + operator for concatenation
+        - In list items: newline
+
+        Visitors that emit an expression directly (math, images, raw
+        Typst, block quotes, ...) must call this before emitting and
+        call _mark_expression_emitted() afterwards.
+        """
+        self._add_paragraph_separator()
+
+        if self.in_desc_parameter:
+            # In desc_parameter, add + before expression (except first)
+            if getattr(self, "_desc_parameter_has_content", False):
+                self.add_text(" + ")
+        elif getattr(self, "_in_link", False):
+            # In link(), add + before expression (except first)
+            if getattr(self, "_link_has_content", False):
+                self.add_text(" + ")
+        elif self.in_list_item and self.list_item_needs_separator:
+            self.add_text("\n")
+
+    def _mark_expression_emitted(self) -> None:
+        """
+        Record that an expression was emitted to the current context.
+
+        Counterpart of _add_expression_separator(): ensures the next
+        expression in the same context gets a separator.
+        """
+        if self.in_desc_parameter:
+            self._desc_parameter_has_content = True
+        elif getattr(self, "_in_link", False):
+            self._link_has_content = True
+        elif self.in_list_item:
+            self.list_item_needs_separator = True
+
     def visit_document(self, node: nodes.document) -> None:
         """
         Visit a document node.
@@ -381,8 +424,12 @@ class TypstTranslator(SphinxTranslator):
             # Output the raw Typst content directly
             content = node.astext()
             if content:  # Only add non-empty content
+                # Separate from preceding inline content (raw nodes can
+                # appear inline via custom roles)
+                self._add_expression_separator()
                 self.add_text(content)
                 self.add_text("\n\n")
+                self._mark_expression_emitted()
             raise nodes.SkipNode
         else:
             # Skip content for other formats
@@ -467,26 +514,11 @@ class TypstTranslator(SphinxTranslator):
         text_content = text_content.replace("\r", " ")
         text_content = text_content.replace("\t", " ")
 
-        # Add separator if in paragraph and not first node
-        self._add_paragraph_separator()
-
         # Add separator before text
-        # In list items: use newline separator
+        # In paragraphs: newline separator (if not first node)
         # In desc_parameter or link: use + operator for concatenation
-        # In paragraphs: handled by _add_paragraph_separator
-        if self.in_desc_parameter:
-            # In desc_parameter, add + before text (except first)
-            if (
-                hasattr(self, "_desc_parameter_has_content")
-                and self._desc_parameter_has_content
-            ):
-                self.add_text(" + ")
-        elif hasattr(self, "_in_link") and self._in_link:
-            # In link(), add + before text (except first)
-            if hasattr(self, "_link_has_content") and self._link_has_content:
-                self.add_text(" + ")
-        elif self.in_list_item and self.list_item_needs_separator:
-            self.add_text("\n")
+        # In list items: use newline separator
+        self._add_expression_separator()
 
         # Determine if we need # prefix (in markup mode)
         prefix = "#" if self._in_markup_mode else ""
@@ -495,12 +527,7 @@ class TypstTranslator(SphinxTranslator):
         self.add_text(f'{prefix}text("{text_content}")')
 
         # Mark that content was added
-        if self.in_desc_parameter:
-            self._desc_parameter_has_content = True
-        elif hasattr(self, "_in_link") and self._in_link:
-            self._link_has_content = True
-        elif self.in_list_item:
-            self.list_item_needs_separator = True
+        self._mark_expression_emitted()
 
     def depart_Text(self, node: nodes.Text) -> None:
         """
@@ -1464,6 +1491,10 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The block quote node
         """
+        # Add separator if not first expression in list item
+        # (block quotes appear inside list items via extra indentation)
+        self._add_expression_separator()
+
         # Check if there's an attribution child node
         has_attribution = any(isinstance(child, nodes.attribution) for child in node)
 
@@ -1487,6 +1518,9 @@ class TypstTranslator(SphinxTranslator):
             self.add_text(")\n\n")
         else:
             self.add_text("]\n\n")
+
+        # Mark that an expression was emitted (separator needed before next)
+        self._mark_expression_emitted()
 
     def visit_attribution(self, node: nodes.attribution) -> None:
         """
@@ -1530,6 +1564,9 @@ class TypstTranslator(SphinxTranslator):
         if self.in_figure:
             self.add_text(f'  image("{adjusted_uri}"')
         else:
+            # Add separator if not first expression in paragraph/list item
+            # (images appear inline via substitution references)
+            self._add_expression_separator()
             # No # prefix in code mode
             self.add_text(f'image("{adjusted_uri}"')
 
@@ -1554,6 +1591,8 @@ class TypstTranslator(SphinxTranslator):
         # If inside a figure, don't add extra newlines (figure will handle spacing)
         if not self.in_figure:
             self.add_text("\n\n")
+            # Mark that an expression was emitted (separator needed before next)
+            self._mark_expression_emitted()
 
     def visit_target(self, node: nodes.target) -> None:
         """
@@ -2198,8 +2237,8 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The inline math node
         """
-        # Add separator if in paragraph and not first node
-        self._add_paragraph_separator()
+        # Add separator if not first expression in paragraph/list item
+        self._add_expression_separator()
 
         # Extract math content
         math_content = node.astext()
@@ -2225,6 +2264,9 @@ class TypstTranslator(SphinxTranslator):
         if "ids" in node and node["ids"]:
             label = node["ids"][0]
             self.add_text(f" <{label}>")
+
+        # Mark that an expression was emitted (separator needed before next)
+        self._mark_expression_emitted()
 
         # Skip children to prevent duplicate output of math content
         raise nodes.SkipNode
@@ -2256,6 +2298,9 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The block math node
         """
+        # Add separator if not first expression in list item
+        self._add_expression_separator()
+
         # Extract math content
         math_content = node.astext()
 
@@ -2282,6 +2327,9 @@ class TypstTranslator(SphinxTranslator):
             self.add_text(f" <{label}>")
 
         self.add_text("\n\n")
+
+        # Mark that an expression was emitted (separator needed before next)
+        self._mark_expression_emitted()
 
         # Skip children to prevent duplicate output of math content
         raise nodes.SkipNode
