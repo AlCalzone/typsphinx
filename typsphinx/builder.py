@@ -456,15 +456,57 @@ class TypstBuilder(Builder):
             logger.warning(f"Failed to copy template asset {rel_path}: {e}")
             return False
 
+    def copy_bibtex_files(self) -> None:
+        """
+        Copy BibTeX bibliography files to the output directory.
+
+        When sphinxcontrib-bibtex is enabled, the generated Typst markup
+        references the configured .bib files directly (Typst reads BibTeX
+        natively), so they must be available next to the .typ output.
+
+        Does nothing when sphinxcontrib-bibtex is not used (the
+        bibtex_bibfiles configuration value does not exist then).
+        """
+        bibfiles = getattr(self.config, "bibtex_bibfiles", None)
+        if not bibfiles:
+            return
+
+        logger.info(f"Copying {len(bibfiles)} bibliography file(s)...")
+
+        for bibfile in bibfiles:
+            # bibtex_bibfiles entries are relative to the source directory
+            if path.isabs(bibfile) or bibfile.startswith(".."):
+                logger.warning(
+                    f"Cannot copy bibliography file outside the source "
+                    f"directory: {bibfile}"
+                )
+                continue
+
+            src = path.join(self.srcdir, bibfile)
+            if not path.exists(src):
+                logger.warning(f"Bibliography file not found: {src}")
+                continue
+
+            dest = path.join(self.outdir, bibfile)
+            ensuredir(path.dirname(dest))
+
+            try:
+                shutil.copy2(src, dest)
+                logger.debug(f"Copied bibliography file: {bibfile}")
+            except Exception as e:
+                logger.warning(f"Failed to copy bibliography file {bibfile}: {e}")
+
     def finish(self) -> None:
         """
         Finish the build process.
 
         This method is called once after all documents have been written.
-        Copies image files and template assets to the output directory.
+        Copies image files, template assets and bibliography files to the
+        output directory.
         """
         self.copy_image_files()
         self.copy_template_assets()
+        self.copy_bibtex_files()
 
 
 class TypstPDFBuilder(TypstBuilder):

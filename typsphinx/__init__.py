@@ -19,7 +19,7 @@ from typing import Any, Dict
 from sphinx.application import Sphinx
 
 from typsphinx.builder import TypstBuilder, TypstPDFBuilder
-from typsphinx.transforms import TypstNumrefTransform
+from typsphinx.transforms import TypstCitationTransform, TypstNumrefTransform
 
 
 def setup(app: Sphinx) -> Dict[str, Any]:
@@ -40,6 +40,9 @@ def setup(app: Sphinx) -> Dict[str, Any]:
     # Convert :numref: references to native Typst ref() for typst builders
     # (only runs for the typst/typstpdf builders, see TypstNumrefTransform)
     app.add_post_transform(TypstNumrefTransform)
+    # Map sphinxcontrib-bibtex citations/bibliographies to native Typst
+    # cite()/bibliography() calls (inert unless cite nodes are present)
+    app.add_post_transform(TypstCitationTransform)
 
     # Register configuration values
     app.add_config_value("typst_documents", [], "html", [list])
