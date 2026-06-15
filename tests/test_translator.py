@@ -3265,7 +3265,8 @@ def test_image_path_adjustment_root(simple_document, mock_builder):
     # Root document: path should NOT be adjusted
     assert 'image("images/logo.png"' in output
     assert "../images" not in output
-    assert "width: 200px" in output
+    # px is not a valid Typst unit; widths are converted to pt (1px = 0.75pt)
+    assert "width: 150pt" in output
 
 
 def test_image_path_adjustment_nested(simple_document, mock_builder):
@@ -3289,7 +3290,8 @@ def test_image_path_adjustment_nested(simple_document, mock_builder):
 
     # Nested document: path should be adjusted
     assert 'image("../images/logo.png"' in output
-    assert "width: 200px" in output
+    # px is not a valid Typst unit; widths are converted to pt (1px = 0.75pt)
+    assert "width: 150pt" in output
 
 
 def test_image_path_adjustment_deep_nested(simple_document, mock_builder):
@@ -3381,5 +3383,6 @@ def test_image_path_adjustment_subdirectory(simple_document, mock_builder):
 
     # Subdirectory: img/diagram.jpeg (relative to current directory)
     assert 'image("img/diagram.jpeg"' in output
-    assert "width: 250px" in output
+    # px is not a valid Typst unit; widths are converted to pt (1px = 0.75pt)
+    assert "width: 187.5pt" in output
     assert "../" not in output  # No need to go up

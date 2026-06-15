@@ -16,6 +16,29 @@ from sphinx.util.docutils import SphinxTranslator
 logger = logging.getLogger(__name__)
 
 
+def _convert_length(value: Union[str, int, float]) -> str:
+    """
+    Convert a docutils length to one Typst understands.
+
+    Typst has no ``px`` unit, and docutils treats unitless lengths as
+    pixels. Both are converted to points using the CSS reference-pixel
+    ratio: 96px and 72pt each span one inch, so 1px = 72/96 = 0.75pt.
+    Lengths with any other unit are returned unchanged.
+
+    Args:
+        value: The length value from a docutils attribute
+
+    Returns:
+        A length string that is valid in Typst
+    """
+    value = str(value).strip()
+    if value.endswith("px"):
+        value = value[:-2].strip()
+    if re.fullmatch(r"\d+(\.\d+)?", value):
+        return "%gpt" % (float(value) * 0.75)  # 72pt/in / 96px/in
+    return value
+
+
 class TypstTranslator(SphinxTranslator):
     """
     Translator class that converts docutils nodes to Typst markup.
@@ -1548,6 +1571,8 @@ class TypstTranslator(SphinxTranslator):
 
         Generates image() function call (no # prefix in code mode).
         Adjusts image paths for nested documents (Issue #69).
+        Outside of figures, the image is wrapped in box() so that it is
+        inline content; Typst drops bare block-level images inside par().
 
         Args:
             node: The image node
@@ -1564,22 +1589,22 @@ class TypstTranslator(SphinxTranslator):
         if self.in_figure:
             self.add_text(f'  image("{adjusted_uri}"')
         else:
-            # Add separator if not first expression in paragraph/list item
-            # (images appear inline via substitution references)
+            # Separate from preceding inline content (unified code-mode
+            # separator); box() makes the image inline-able, as Typst drops
+            # bare block-level images inside par().
             self._add_expression_separator()
-            # No # prefix in code mode
-            self.add_text(f'image("{adjusted_uri}"')
+            self.add_text(f'box(image("{adjusted_uri}"')
 
         # Add optional attributes
         if "width" in node:
-            width = node["width"]
+            width = _convert_length(node["width"])
             self.add_text(f", width: {width}")
 
         if "height" in node:
-            height = node["height"]
+            height = _convert_length(node["height"])
             self.add_text(f", height: {height}")
 
-        self.add_text(")")
+        self.add_text(")" if self.in_figure else "))")
 
     def depart_image(self, node: nodes.image) -> None:
         """
@@ -1588,11 +1613,31 @@ class TypstTranslator(SphinxTranslator):
         Args:
             node: The image node
         """
-        # If inside a figure, don't add extra newlines (figure will handle spacing)
-        if not self.in_figure:
+        # If inside a figure, don't add extra newlines (figure will handle
+        # spacing); inside a paragraph, the image is inline content and
+        # spacing is handled by _add_paragraph_separator()
+        if not self.in_figure and not self.in_paragraph:
             self.add_text("\n\n")
             # Mark that an expression was emitted (separator needed before next)
             self._mark_expression_emitted()
+
+    def visit_substitution_definition(
+        self, node: nodes.substitution_definition
+    ) -> None:
+        """
+        Visit a substitution definition node (e.g. ``.. |name| image:: ...``).
+
+        Substitution definitions only declare content; docutils inlines it
+        at every substitution reference. Emitting the definition itself
+        would duplicate the content, so it is skipped entirely.
+
+        Args:
+            node: The substitution definition node
+
+        Raises:
+            nodes.SkipNode: Always raised to skip the definition
+        """
+        raise nodes.SkipNode
 
     def visit_target(self, node: nodes.target) -> None:
         """

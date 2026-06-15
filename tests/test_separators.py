@@ -176,10 +176,10 @@ class TestImageSeparators:
         )
         output = typ_file.read_text()
 
-        assert 'text("Here is an image ")image(' not in output, (
+        assert 'text("Here is an image ")box(image(' not in output, (
             "Missing separator between text and inline image:\n" + output
         )
-        assert 'text("Here is an image ")\nimage(' in output
+        assert 'text("Here is an image ")\nbox(image(' in output
         assert_compiles(typ_file)
 
     def test_image_after_text_in_list_item(self, tmp_path):
@@ -195,8 +195,8 @@ class TestImageSeparators:
         )
         output = typ_file.read_text()
 
-        assert 'text("Icon: ")image(' not in output, (
+        assert 'text("Icon: ")box(image(' not in output, (
             "Missing separator between text and inline image:\n" + output
         )
-        assert 'text("Icon: ")\nimage(' in output
+        assert 'text("Icon: ")\nbox(image(' in output
         assert_compiles(typ_file)
