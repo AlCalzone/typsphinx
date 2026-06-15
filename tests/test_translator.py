@@ -1751,7 +1751,8 @@ def test_target_label_generation(simple_document, mock_builder):
     output = translator.astext()
 
     # Labels can only attach to an element in markup mode, so standalone
-    # targets must produce an invisible attachable anchor
+    # targets must produce an invisible attachable anchor. This translator is
+    # constructed without a builder docname, so the label is unqualified.
     assert "[#metadata(none) <my-label>]" in output
 
 

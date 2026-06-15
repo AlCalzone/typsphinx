@@ -5,6 +5,7 @@ This module implements the TypstTranslator class, which translates docutils
 nodes to Typst markup.
 """
 
+import posixpath
 import re
 from typing import Any, List, Optional, Union
 
@@ -14,6 +15,30 @@ from sphinx.util import logging
 from sphinx.util.docutils import SphinxTranslator
 
 logger = logging.getLogger(__name__)
+
+#: Characters that are not allowed in Typst label names
+_LABEL_INVALID_CHARS = re.compile(r"[^0-9A-Za-z_.:-]")
+
+
+def make_label(docname: str, refid: Optional[str] = None) -> str:
+    """
+    Build a document-unique Typst label name.
+
+    Sphinx target ids are only unique within one document, but all documents
+    are compiled into a single Typst root document and Typst rejects duplicate
+    labels. Therefore qualify target ids with their docname ("docname:id")
+    and sanitize characters Typst does not allow in label names.
+
+    Args:
+        docname: Name of the document containing the target
+        refid: Target id within the document, or None for the label that
+            identifies the document itself (used by :doc: references)
+
+    Returns:
+        Sanitized Typst label name
+    """
+    name = docname if refid is None else f"{docname}:{refid}"
+    return _LABEL_INVALID_CHARS.sub("-", name)
 
 
 def _convert_length(value: Union[str, int, float]) -> str:
@@ -264,7 +289,10 @@ class TypstTranslator(SphinxTranslator):
         """
         ids = node.get("ids")
         if ids and ids[0] in self._referenced_labels:
-            return ids[0]
+            # The membership check uses the bare id (as stored by __init__);
+            # the returned label is docname-qualified so it matches the
+            # qualified link() emitted by visit_reference for this target.
+            return self._qualify_label(ids[0])
         return None
 
     def astext(self) -> str:
@@ -347,8 +375,7 @@ class TypstTranslator(SphinxTranslator):
         elif self.in_list_item:
             self.list_item_needs_separator = True
 
-    @staticmethod
-    def _anchor_labels(label_ids: List[str]) -> str:
+    def _anchor_labels(self, label_ids: List[str]) -> str:
         """
         Build invisible attachable anchors for the given label ids.
 
@@ -362,7 +389,27 @@ class TypstTranslator(SphinxTranslator):
         Returns:
             Markup blocks with labelled metadata elements
         """
-        return "".join(f"[#metadata(none) <{label_id}>]" for label_id in label_ids)
+        return "".join(
+            f"[#metadata(none) <{self._qualify_label(label_id)}>]"
+            for label_id in label_ids
+        )
+
+    def _qualify_label(self, refid: str) -> str:
+        """
+        Qualify a target id with the current docname (see make_label()).
+
+        Falls back to the bare id if the current docname is unknown.
+
+        Args:
+            refid: Target id within the current document
+
+        Returns:
+            Document-unique Typst label name
+        """
+        docname = getattr(self.builder, "current_docname", None)
+        if not docname:
+            return refid
+        return make_label(docname, refid)
 
     def visit_document(self, node: nodes.document) -> None:
         """
@@ -375,6 +422,12 @@ class TypstTranslator(SphinxTranslator):
         """
         # Start code block for unified code mode (all content uses function syntax without # prefix)
         self.add_text("#{\n")
+
+        # Emit an invisible anchor identifying this document, so that
+        # cross-document :doc: references can link to it (see make_label())
+        docname = getattr(self.builder, "current_docname", None)
+        if docname:
+            self.add_text(f"[#metadata(none) <{make_label(docname)}>]\n")
 
     def depart_document(self, node: nodes.document) -> None:
         """
@@ -489,9 +542,9 @@ class TypstTranslator(SphinxTranslator):
             # Attach the primary id to the heading; emit invisible anchors
             # for any additional ids (e.g. explicit `.. _name:` targets)
             primary, *extras = self._title_label_ids
-            self.add_text(f") <{primary}>")
+            self.add_text(f") <{self._qualify_label(primary)}>")
             for extra in extras:
-                self.add_text(f"#metadata(none) <{extra}>")
+                self.add_text(f"#metadata(none) <{self._qualify_label(extra)}>")
             self.add_text("]\n\n")
             self._title_label_ids = []
         else:
@@ -645,13 +698,11 @@ class TypstTranslator(SphinxTranslator):
         self.in_paragraph = True
         self.paragraph_has_content = False
 
-        # If a same-document reference targets this paragraph (e.g. via a
-        # ``.. _name:`` target propagated onto it), wrap it in a markup
-        # block so a label can be attached (labels require markup mode)
-        if self._label_to_attach(node):
-            self.add_text("[#par({")
-        else:
-            self.add_text("par({")
+        # Start par() with {} content block (no # prefix in code mode).
+        # Propagated ids of a referenced paragraph are already anchored above
+        # via _anchor_labels(node["ids"]); we must NOT also attach a label
+        # here, as duplicate Typst labels are a hard compilation error.
+        self.add_text("par({")
 
     def depart_paragraph(self, node: nodes.paragraph) -> None:
         """
@@ -674,15 +725,12 @@ class TypstTranslator(SphinxTranslator):
             self.add_text("\n")
             return
 
-        # Close par({}) content block, attaching the label if a
-        # same-document reference targets this paragraph (see visit_paragraph)
+        # Close par({}) content block. Propagated ids of a referenced
+        # paragraph are anchored in visit_paragraph via _anchor_labels, so no
+        # label is attached here (avoiding duplicate-label compile errors).
         self.in_paragraph = False
         self.paragraph_has_content = False
-        label = self._label_to_attach(node)
-        if label:
-            self.add_text(f"}}) <{label}>]\n\n")
-        else:
-            self.add_text("})\n\n")
+        self.add_text("})\n\n")
 
     def visit_comment(self, node: nodes.comment) -> None:
         """
@@ -1362,7 +1410,7 @@ class TypstTranslator(SphinxTranslator):
         # Handle :name: option without :caption: - attach label to the raw
         # block and close the markup wrapper opened in visit_literal_block
         if self._literal_block_in_label_wrap:
-            label = node.get("names")[0]
+            label = self._qualify_label(node.get("names")[0])
             self.add_text(f" <{label}>]")
             self._literal_block_in_label_wrap = False
         self.add_text("\n")
@@ -1377,7 +1425,7 @@ class TypstTranslator(SphinxTranslator):
             self.add_text("]")
             # Attach label and close the markup wrapper if present
             if self.code_block_label:
-                self.add_text(f" <{self.code_block_label}>]")
+                self.add_text(f" <{self._qualify_label(self.code_block_label)}>]")
             self.add_text("\n\n")
         elif node.get("names"):
             # Label already attached inside the markup wrapper above
@@ -1559,9 +1607,9 @@ class TypstTranslator(SphinxTranslator):
         # Attach label and close markup block if figure has ids
         if node.get("ids"):
             primary, *extras = node["ids"]
-            self.add_text(f"\n) <{primary}>")
+            self.add_text(f"\n) <{self._qualify_label(primary)}>")
             for extra in extras:
-                self.add_text(f"#metadata(none) <{extra}>")
+                self.add_text(f"#metadata(none) <{self._qualify_label(extra)}>")
             self.add_text("]\n\n")
         else:
             self.add_text("\n)\n\n")
@@ -2040,7 +2088,7 @@ class TypstTranslator(SphinxTranslator):
             self._in_markup_mode = True
             # Output label in markup mode (with # prefix in markup mode)
             if node.get("ids"):
-                label_id = node["ids"][0]
+                label_id = self._qualify_label(node["ids"][0])
                 self.add_text(f'\n#label("{label_id}")')
             # Close the markup block
             self.add_text("]")
@@ -2053,21 +2101,28 @@ class TypstTranslator(SphinxTranslator):
             # Skip processing children as target is typically empty
             raise nodes.SkipNode
 
-        # Original behavior for non-markup-wrapped targets
-        # Generate invisible anchors if the target kept its ids. A bare
-        # label() statement attaches to nothing in code mode; labels can
-        # only be attached to an element in markup mode, so an invisible
-        # metadata element is labelled instead: [#metadata(none) <label>]
-        # Targets whose ids were propagated to the following node (refid
-        # only) are handled by that node and produce no output here.
-        if node.get("ids"):
+        # Emit an invisible, linkable anchor for every id this target defines
+        # itself. Labels are docname-qualified to stay unique in the compiled
+        # root document.
+        #
+        # Targets whose id was propagated onto a following element (e.g.
+        # ``.. _label:`` before a section title, a paragraph or a table) keep
+        # only a "refid" and no own "ids"; that propagated id is anchored by
+        # the receiving element (depart_title / visit_paragraph / depart_table),
+        # so emitting it here too would create a duplicate Typst label (a hard
+        # compilation error). We therefore anchor only this target's own ids.
+        anchor_ids = list(node.get("ids", []))
+
+        if anchor_ids:
             # Add newline separator if in list item and not first element
             if self.in_list_item and self.list_item_needs_separator:
                 self.add_text("\n")
             else:
                 self._add_paragraph_separator()
 
-            self.add_text(self._anchor_labels(node["ids"]))
+            for anchor_id in anchor_ids:
+                label = self._qualify_label(anchor_id)
+                self.add_text(f"[#metadata(none) <{label}>]\n")
 
             # Mark that next element in list item needs separator
             if self.in_list_item:
@@ -2456,6 +2511,50 @@ class TypstTranslator(SphinxTranslator):
         # Toctree is handled in visit
         pass
 
+    def _crossdoc_reference_label(
+        self, node: nodes.reference, refuri: str
+    ) -> Optional[str]:
+        """
+        Map a Sphinx-resolved cross-document refuri to a Typst label name.
+
+        Sphinx resolves references to targets in other documents as URIs
+        relative to the current output file, with the builder's out_suffix
+        appended by get_target_uri() (e.g. "../chapter2.typ#anchor", or
+        "chapter2.pdf#anchor" for the typstpdf builder). Normalise the path
+        back to the target docname and build the docname-qualified label
+        that the target document emits.
+
+        Args:
+            node: The reference node
+            refuri: The reference URI
+
+        Returns:
+            Typst label name, or None if the reference is not a resolved
+            cross-document reference
+        """
+        if not node.get("internal"):
+            return None
+
+        current_docname = getattr(self.builder, "current_docname", None)
+        if not current_docname:
+            return None
+
+        path_part, _, anchor = refuri.partition("#")
+        for suffix in (".typ", ".pdf"):
+            if path_part.endswith(suffix):
+                path_part = path_part[: -len(suffix)]
+                break
+        else:
+            return None
+
+        docname = posixpath.normpath(
+            posixpath.join(posixpath.dirname(current_docname), path_part)
+        )
+        if anchor:
+            return make_label(docname, anchor)
+        # Whole-document reference (:doc:): link to the document's own anchor
+        return make_label(docname)
+
     def visit_reference(self, node: nodes.reference) -> None:
         """
         Visit a reference node (link).
@@ -2501,6 +2600,11 @@ class TypstTranslator(SphinxTranslator):
         refuri = node.get("refuri", "")
         refid = node.get("refid", "")
 
+        # Same-document references resolved by Sphinx carry only "refid";
+        # treat them like internal "#anchor" references
+        if not refuri and node.get("refid"):
+            refuri = "#" + node["refid"]
+
         # Handle empty URLs (Typst 0.14+ rejects empty URLs)
         # This can occur with unresolved references, broken cross-references,
         # or malformed reStructuredText. Instead of generating invalid link("", ...),
@@ -2534,16 +2638,26 @@ class TypstTranslator(SphinxTranslator):
         prefix = "#" if self._in_markup_mode else ""
 
         if refid_label is not None:
-            # Same-document reference: link to the in-document label
-            self.add_text(f"{prefix}link(<{refid_label}>, ")
+            # Same-document reference: link to the in-document label.
+            # _refid_label() returns the bare target id; qualify it here so
+            # the link matches the docname-qualified label the target emits.
+            self.add_text(f"{prefix}link(<{self._qualify_label(refid_label)}>, ")
         # Check if it's an internal reference (starts with #)
         elif refuri.startswith("#"):
-            # Internal reference to a label
-            label = refuri[1:]  # Remove the #
+            # Internal reference to a label in the current document
+            label = self._qualify_label(refuri[1:])  # Remove the #
             self.add_text(f"{prefix}link(<{label}>, ")
         else:
-            # External reference (HTTP/HTTPS URL or relative path)
-            self.add_text(f'{prefix}link("{refuri}", ')
+            # Sphinx resolves references to targets in other documents as
+            # relative URIs to the generated output files. All documents are
+            # compiled into a single root document, so convert those URIs
+            # back to internal labels instead of emitting dead file links.
+            crossdoc_label = self._crossdoc_reference_label(node, refuri)
+            if crossdoc_label is not None:
+                self.add_text(f"{prefix}link(<{crossdoc_label}>, ")
+            else:
+                # External reference (HTTP/HTTPS URL or relative path)
+                self.add_text(f'{prefix}link("{refuri}", ')
 
         # After outputting link(), turn off markup mode for content (second argument)
         # Content inside function arguments is code mode (no # prefix)
@@ -2864,7 +2978,7 @@ class TypstTranslator(SphinxTranslator):
 
         # Task 6.3: Labels can only attach in markup mode, so labelled math
         # is wrapped in a markup block: [#mi(`...`) <label>] / [$...$ <label>]
-        label = node["ids"][0] if node.get("ids") else None
+        label = self._qualify_label(node["ids"][0]) if node.get("ids") else None
 
         # Task 6.4: Check if this is explicitly marked as Typst native
         is_typst_native = "typst-native" in node.get("classes", [])
@@ -2930,7 +3044,7 @@ class TypstTranslator(SphinxTranslator):
 
         # Task 6.3: Labels can only attach in markup mode, so labelled math
         # is wrapped in a markup block: [#mitex(`...`) <label>]
-        label = node["ids"][0] if node.get("ids") else None
+        label = self._qualify_label(node["ids"][0]) if node.get("ids") else None
 
         # Task 6.4: Check if this is explicitly marked as Typst native
         is_typst_native = "typst-native" in node.get("classes", [])

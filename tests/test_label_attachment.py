@@ -60,22 +60,24 @@ class TestLabelAttachment:
         # primary id attached and the explicit `.. _intro-section:` target
         # emitted as an invisible anchor inside the same block.
         assert "[#heading(" in content, "Labelled heading should open a markup block"
-        assert ") <introduction>" in content, "Primary section id should be attached"
         assert (
-            "#metadata(none) <intro-section>" in content
+            ") <index:introduction>" in content
+        ), "Primary section id should be attached"
+        assert (
+            "#metadata(none) <index:intro-section>" in content
         ), "Explicit section target should produce an attachable anchor"
 
     def test_standalone_target_emits_attached_anchor(self, built_typ_file):
         """A standalone `.. _name:` target must produce an invisible anchor."""
         content = built_typ_file.read_text()
 
-        assert "[#metadata(none) <standalone-target>]" in content
+        assert "[#metadata(none) <index:standalone-target>]" in content
 
     def test_trailing_target_emits_attached_anchor(self, built_typ_file):
         """A target that keeps its ids must not emit a bare label() call."""
         content = built_typ_file.read_text()
 
-        assert "[#metadata(none) <trailing-target>]" in content
+        assert "[#metadata(none) <index:trailing-target>]" in content
         # A bare label() statement attaches to nothing in code mode
         assert 'label("' not in content
 
@@ -84,26 +86,28 @@ class TestLabelAttachment:
         content = built_typ_file.read_text()
 
         assert "[#figure(" in content, "Labelled figure should open a markup block"
-        assert ") <my-figure>]" in content, "Figure label should close the block"
+        assert ") <index:my-figure>]" in content, "Figure label should close the block"
 
     def test_code_block_label_attached(self, built_typ_file):
         """A `:name:`-only code block label must attach to the raw block."""
         content = built_typ_file.read_text()
 
-        assert "<my-code>]" in content, "Code block label should close a markup block"
+        assert (
+            "<index:my-code>]" in content
+        ), "Code block label should close a markup block"
 
     def test_captioned_code_block_label_attached(self, built_typ_file):
         """A captioned code block label must attach to the wrapping figure."""
         content = built_typ_file.read_text()
 
         assert "[#figure(caption: [Captioned code])[" in content
-        assert "<my-captioned-code>]" in content
+        assert "<index:my-captioned-code>]" in content
 
     def test_equation_label_attached(self, built_typ_file):
         """An equation label must be wrapped in a markup block."""
         content = built_typ_file.read_text()
 
-        assert "<equation-my-equation>]" in content
+        assert "<index:equation-my-equation>]" in content
 
     def test_generated_typst_compiles(self, built_typ_file, tmp_path):
         """The generated Typst document must compile to PDF."""
