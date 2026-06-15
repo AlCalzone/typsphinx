@@ -690,6 +690,107 @@ def test_mixed_nested_lists(simple_document, mock_builder):
     assert 'text("Numbered item")' in output  # Nested with different type
 
 
+def _translate_item_with_nested_list_and_trailing_paragraph(translator, list_type):
+    """Build a list item containing text, a nested list, and a trailing paragraph.
+
+    Equivalent reST::
+
+        - Before nested
+
+          - Inner
+
+          After nested
+    """
+    if list_type == "bullet":
+        list_node_cls = nodes.bullet_list
+        visit_list = translator.visit_bullet_list
+        depart_list = translator.depart_bullet_list
+    else:
+        list_node_cls = nodes.enumerated_list
+        visit_list = translator.visit_enumerated_list
+        depart_list = translator.depart_enumerated_list
+
+    outer_list = list_node_cls()
+    visit_list(outer_list)
+
+    outer_item = nodes.list_item()
+    translator.visit_list_item(outer_item)
+
+    # Leading paragraph in the outer item
+    para1 = nodes.paragraph()
+    translator.visit_paragraph(para1)
+    translator.visit_Text(nodes.Text("Before nested"))
+    translator.depart_Text(nodes.Text("Before nested"))
+    translator.depart_paragraph(para1)
+
+    # Nested list inside the same outer item
+    inner_list = list_node_cls()
+    visit_list(inner_list)
+
+    inner_item = nodes.list_item()
+    translator.visit_list_item(inner_item)
+    translator.visit_Text(nodes.Text("Inner"))
+    translator.depart_Text(nodes.Text("Inner"))
+    translator.depart_list_item(inner_item)
+
+    depart_list(inner_list)
+
+    # Trailing paragraph in the same outer item, after the nested list
+    para2 = nodes.paragraph()
+    translator.visit_paragraph(para2)
+    translator.visit_Text(nodes.Text("After nested"))
+    translator.depart_Text(nodes.Text("After nested"))
+    translator.depart_paragraph(para2)
+
+    translator.depart_list_item(outer_item)
+    depart_list(outer_list)
+
+
+@pytest.mark.parametrize("list_type", ["bullet", "enumerated"])
+def test_content_after_nested_list_gets_separator(
+    simple_document, mock_builder, list_type
+):
+    """Content following a nested list in the same outer item gets a separator.
+
+    Regression test: depart_list_item of the *nested* list's items set
+    in_list_item to False even though the walker was still inside the outer
+    item. A trailing paragraph was then emitted as par({...}) directly
+    adjacent to the nested list's closing ")", producing invalid Typst code
+    like ")par({text("After nested")})".
+    """
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+    _translate_item_with_nested_list_and_trailing_paragraph(translator, list_type)
+
+    output = translator.astext()
+
+    # Still inside a list item, so the trailing paragraph must not be wrapped
+    # in par() and must be separated from the nested list's closing ")".
+    assert ")par(" not in output
+    assert ')\ntext("After nested")' in output
+
+
+@pytest.mark.parametrize("list_type", ["bullet", "enumerated"])
+def test_content_after_nested_list_compiles(
+    tmp_path, simple_document, mock_builder, list_type
+):
+    """The generated Typst for content after a nested list must compile."""
+    typst = pytest.importorskip("typst")
+
+    from typsphinx.translator import TypstTranslator
+
+    translator = TypstTranslator(simple_document, mock_builder)
+    _translate_item_with_nested_list_and_trailing_paragraph(translator, list_type)
+
+    # Wrap the body fragment in the unified code mode block that
+    # visit_document/depart_document would normally emit.
+    typ_file = tmp_path / "doc.typ"
+    typ_file.write_text("#{\n" + translator.astext() + "}\n", encoding="utf-8")
+
+    typst.compile(str(typ_file), output=str(tmp_path / "doc.pdf"))
+
+
 def test_list_item_with_multiple_elements(simple_document, mock_builder):
     """Test list item with multiple inline elements (text + bold + emphasis)."""
     from typsphinx.translator import TypstTranslator

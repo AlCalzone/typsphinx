@@ -797,7 +797,6 @@ class TypstTranslator(SphinxTranslator):
         # Save parent list state and start fresh for nested list
         if len(self.list_stack) > 1:  # Nested list
             self._saved_is_first_list_item = self.is_first_list_item
-            self._saved_list_item_needs_separator = self.list_item_needs_separator
 
         self.is_first_list_item = True
 
@@ -821,9 +820,15 @@ class TypstTranslator(SphinxTranslator):
         if hasattr(self, "_saved_is_first_list_item"):
             self.is_first_list_item = self._saved_is_first_list_item
             delattr(self, "_saved_is_first_list_item")
-        if hasattr(self, "_saved_list_item_needs_separator"):
-            self.list_item_needs_separator = self._saved_list_item_needs_separator
-            delattr(self, "_saved_list_item_needs_separator")
+
+        # Restore outer list item state: depart_list_item of this list's own
+        # items set in_list_item to False even when this list is nested inside
+        # an outer item. Nested lists only occur inside a list item, so a
+        # non-empty stack means the walker is still inside one.
+        self.in_list_item = bool(self.list_stack)
+        if self.in_list_item:
+            # Content following the nested list needs a separator
+            self.list_item_needs_separator = True
 
         # Add newlines only if this is a top-level list
         if not self.list_stack:
@@ -848,7 +853,6 @@ class TypstTranslator(SphinxTranslator):
         # Save parent list state and start fresh for nested list
         if len(self.list_stack) > 1:  # Nested list
             self._saved_is_first_list_item = self.is_first_list_item
-            self._saved_list_item_needs_separator = self.list_item_needs_separator
 
         self.is_first_list_item = True
 
@@ -872,9 +876,15 @@ class TypstTranslator(SphinxTranslator):
         if hasattr(self, "_saved_is_first_list_item"):
             self.is_first_list_item = self._saved_is_first_list_item
             delattr(self, "_saved_is_first_list_item")
-        if hasattr(self, "_saved_list_item_needs_separator"):
-            self.list_item_needs_separator = self._saved_list_item_needs_separator
-            delattr(self, "_saved_list_item_needs_separator")
+
+        # Restore outer list item state: depart_list_item of this list's own
+        # items set in_list_item to False even when this list is nested inside
+        # an outer item. Nested lists only occur inside a list item, so a
+        # non-empty stack means the walker is still inside one.
+        self.in_list_item = bool(self.list_stack)
+        if self.in_list_item:
+            # Content following the nested list needs a separator
+            self.list_item_needs_separator = True
 
         # Add newlines only if this is a top-level list
         if not self.list_stack:
