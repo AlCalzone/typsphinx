@@ -16,6 +16,7 @@ from sphinx.util import logging
 from sphinx.util.osutil import ensuredir
 
 from typsphinx.pdf import compile_typst_to_pdf
+from typsphinx.translator import TypstTranslator
 from typsphinx.writer import TypstWriter
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class TypstBuilder(Builder):
     format = "typst"
     out_suffix = ".typ"
     allow_parallel = True
+    default_translator_class = TypstTranslator
 
     def init(self) -> None:
         """

@@ -5,7 +5,7 @@ This module implements the TypstWriter class, which converts docutils
 document trees to Typst markup.
 """
 
-from typing import Any
+from typing import Any, cast
 
 from docutils import writers
 
@@ -61,16 +61,18 @@ class TypstWriter(writers.Writer):
         """
         Translate the document tree to Typst markup.
 
-        This method creates a TypstTranslator and visits the document tree,
-        then wraps the output with a template using TemplateEngine.
+        This method creates a translator via the builder (honoring custom
+        translators registered with ``app.set_translator()``) and visits the
+        document tree, then wraps the output with a template using
+        TemplateEngine.
 
         For master documents (defined in typst_documents), the full template
         is applied. For included documents, only the body content is output.
         """
         # Generate body content
-        self.visitor = TypstTranslator(self.document, self.builder)
+        self.visitor = self.builder.create_translator(self.document, self.builder)
         self.document.walkabout(self.visitor)
-        body = self.visitor.astext()
+        body = cast(TypstTranslator, self.visitor).astext()
 
         # WORKAROUND: For some Sphinx documents, visit_document may not be called
         # Ensure body is wrapped in code mode block
