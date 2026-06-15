@@ -48,6 +48,10 @@
   // Text setup
   set text(size: fontsize, lang: "en")
 
+  // In Sphinx, strong means "bold", not "bolder than the surrounding text",
+  // so pin an absolute weight rather than Typst's cumulative per-nesting delta.
+  show strong: it => text(weight: 700, it.body)
+
   // Heading setup
   set heading(numbering: "1.1")
 
